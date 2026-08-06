@@ -1,0 +1,13 @@
+# Upstream dependency lock
+
+Pinned 2026-08-06. Format: name | repository | branch | commit | release | license
+
+atvloadly            | https://github.com/bitxeno/atvloadly         | master  | df201956449635815d1d816d0eaf20c4baf4f9e6 | v0.4.6    | AGPL-3.0
+Impactor             | https://github.com/claration/Impactor         | main    | 68664c71018dd25a53e871e348bdf8c8096e9891 | v2.6.0    | MIT
+idevice              | https://github.com/jkcoxson/idevice           | master  | 7fe8adbdf8c72385971b05a86857e02d6fa2ed7c | v0.1.65   | MIT
+idevice_pair         | https://github.com/jkcoxson/idevice_pair      | master  | a78b2bb1166928f300c9a3e46d9f0c7df5fb6b6d | v1.0.0    | MIT (declared, no file)
+iloader              | https://github.com/nab138/iloader              | main    | 8547013c50b86087fb542bc14aafa4c6c60e6638 | v2.3.1    | MIT
+LiveContainer        | https://github.com/LiveContainer/LiveContainer | main    | ac2186e2558ad7cacc6b5a2970b92ce5d4d0d60c | 3.8.0     | AGPL-3.0 (README discrepancy)
+SideStore            | https://github.com/SideStore/SideStore         | develop | a9238cb974ae56cf0f17d14dc517d5e06e21b52a | 0.6.3     | AGPL-3.0
+sidestore-vpn        | https://github.com/xddxdd/sidestore-vpn        | master  | 1cb5f5d94e6f0baf4ed432d30b926bb0c39a9904 | none      | Unlicense
+anisette-v3-server   | https://github.com/Dadoum/anisette-v3-server   | main    | 2ef18d7da2abe3a6d070aa478f774538b947aaa2 | none      | none (do not redistribute)

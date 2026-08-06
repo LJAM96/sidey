@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["transport-spike"]
+
+[profile.release]
+lto = true
