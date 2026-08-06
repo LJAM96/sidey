@@ -1047,6 +1047,8 @@ docker compose -f compose.yaml -f compose.edge.yaml up -d
 
 must start the edge stack.
 
+Status 2026-08-06: compose foundation scaffolded in deploy/ (base, oracle, edge, development, compatibility, monitoring), multi stage Dockerfiles in packaging/docker, schema migration with tracking table, Docker secrets, health checks and dependency ordering. Verified on this host: fresh apply once, repeatable skip, all services healthy, data survives container replacement. Remaining: multi architecture build verification (buildx, Phase O) and gateway TLS termination with a real domain.
+
 ### Exit criteria
 
 Fresh deployment succeeds on both amd64 and arm64.

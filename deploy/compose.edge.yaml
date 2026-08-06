@@ -1,0 +1,46 @@
+# Local edge overlay: device agent + tailscale.
+# Usage: docker compose -f compose.yaml -f compose.edge.yaml up -d
+name: sidey
+
+services:
+  device-agent:
+    build:
+      context: ..
+      dockerfile: packaging/docker/device-agent/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8091"
+      RUST_LOG: info
+    # Only the edge host receives these privileges (plan: "Docker design").
+    volumes:
+      - /var/run/usbmuxd:/var/run/usbmuxd
+      - /var/run/dbus:/var/run/dbus
+      - /var/run/avahi-daemon:/var/run/avahi-daemon
+      - pairing-vault:/var/lib/sidey/pairing
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8091/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    # For tvOS discovery, host networking may be preferable to routed bridge
+    # networking. Selected after testing (plan: "Initial edge services"),
+    # not assumed.
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    restart: unless-stopped
+    hostname: sidey-edge
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_STATE_DIR: /var/lib/tailscale
+    volumes:
+      - ts-state:/var/lib/tailscale
+    networks: [internal]
+
+volumes:
+  pairing-vault:
+  ts-state:

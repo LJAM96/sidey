@@ -1,0 +1,71 @@
+# Oracle / Internet facing control plane overlay.
+# Usage: docker compose -f compose.yaml -f compose.oracle.yaml up -d
+name: sidey
+
+services:
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../deploy/config/gateway/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    restart: unless-stopped
+    hostname: sidey-oracle
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_EXTRA_ARGS: --ssh
+    volumes:
+      - ts-state:/var/lib/tailscale
+    networks: [internal]
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: sidey
+      PGDATABASE: sidey
+    secrets:
+      - db_password
+    volumes:
+      - backups:/backups
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        export PGPASSWORD="$$(cat /run/secrets/db_password)"
+        while true; do
+          ts="$$(date -u +%Y%m%dT%H%M%SZ)"
+          echo "backing up to /backups/sidey-$${ts}.sql.gz"
+          pg_dump -h postgres -U sidey -d sidey | gzip > "/backups/sidey-$${ts}.sql.gz"
+          find /backups -name 'sidey-*.sql.gz' -mtime +14 -delete
+          sleep 3600
+        done
+    networks: [internal]
+
+volumes:
+  caddy-data:
+  caddy-config:
+  ts-state:
+  backups:

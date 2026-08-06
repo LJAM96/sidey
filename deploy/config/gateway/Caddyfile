@@ -1,0 +1,11 @@
+# Sidey gateway - Caddy.
+# Internet facing entry point; terminates TLS, proxies to control-plane.
+# The control-plane port is never exposed directly on Oracle.
+
+:80 {
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	reverse_proxy control-plane:8080
+}

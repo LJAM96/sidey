@@ -1,0 +1,29 @@
+# Optional compatibility profile: SideStore / AltServer helpers.
+# Usage: docker compose -f compose.yaml -f compose.compatibility.yaml --profile compatibility up -d
+name: sidey
+
+services:
+  anisette-v3:
+    # No licence declared upstream (LICENSING.md flag): must not be
+    # redistributed. The operator pulls this image themselves.
+    image: dadoum/anisette-v3-server:latest
+    profiles: ["compatibility"]
+    restart: unless-stopped
+    volumes:
+      - anisette-state:/opt/anisette-v3-server
+    networks: [internal]
+
+  sidestore-vpn:
+    # Image publishing to be verified at Phase O; pinned source in
+    # third_party/versions.lock (xddxdd/sidestore-vpn, Unlicense).
+    image: sidey/sidestore-vpn:placeholder
+    profiles: ["compatibility"]
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    networks: [internal]
+
+volumes:
+  anisette-state:

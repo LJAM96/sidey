@@ -1,0 +1,25 @@
+# Monitoring overlay (Phase N).
+# Usage: docker compose -f compose.yaml -f compose.monitoring.yaml --profile monitoring up -d
+# Configuration files land with Phase N; these are structural placeholders.
+name: sidey
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    networks: [internal]
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    networks: [internal]
+
+  loki:
+    image: grafana/loki:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    networks: [internal]

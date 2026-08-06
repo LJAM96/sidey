@@ -1,0 +1,106 @@
+name: sidey
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sidey
+      POSTGRES_USER: sidey
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sidey -d sidey"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  migrate:
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: sidey
+      PGDATABASE: sidey
+    secrets:
+      - db_password
+    volumes:
+      - ../migrations:/migrations:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        export PGPASSWORD="$$(cat /run/secrets/db_password)"
+        psql -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())'
+        for f in /migrations/*.sql; do
+          name="$$(basename "$$f")"
+          if psql -tA -c "SELECT 1 FROM schema_migrations WHERE name = '$$name'" | grep -q 1; then
+            echo "skipping $$name (already applied)"
+          else
+            echo "applying $$name"
+            psql -v ON_ERROR_STOP=1 -f "$$f"
+            psql -v ON_ERROR_STOP=1 -c "INSERT INTO schema_migrations (name) VALUES ('$$name')"
+          fi
+        done
+        echo "migrations complete"
+    networks: [internal]
+
+  control-plane:
+    build:
+      context: ..
+      dockerfile: packaging/docker/control-plane/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://sidey@postgres:5432/sidey
+    secrets:
+      - session_signing_key
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  signing-worker:
+    build:
+      context: ..
+      dockerfile: packaging/docker/signing-worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8090"
+    secrets:
+      - apple_credential_key
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  pgdata:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password
+  session_signing_key:
+    file: ./secrets/session_signing_key
+  apple_credential_key:
+    file: ./secrets/apple_credential_key
+
+networks:
+  internal: {}

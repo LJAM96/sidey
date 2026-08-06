@@ -1,0 +1,8 @@
+[package]
+name = "signer"
+version = "0.1.0"
+edition = "2021"
+description = "Sidey signing worker placeholder (Impactor extraction lands in Phase F)"
+
+[profile.release]
+lto = true

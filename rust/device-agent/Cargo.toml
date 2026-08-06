@@ -1,0 +1,8 @@
+[package]
+name = "device-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Sidey device agent placeholder (providers land in Phases G/H)"
+
+[profile.release]
+lto = true
