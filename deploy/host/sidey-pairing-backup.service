@@ -1,0 +1,10 @@
+# One-shot backup of the pairing state + cert identity (see
+# scripts/backup-pairing-state.sh). Runs via sidey-pairing-backup.timer.
+[Unit]
+Description=Sidey pairing-state backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/git/sidey-server/scripts/backup-pairing-state.sh

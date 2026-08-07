@@ -1,0 +1,12 @@
+# Daily pairing-state backup (04:15 local, delayed randomly, persistent so a
+# missed fire at shutdown runs on next boot).
+[Unit]
+Description=Daily sidey pairing-state backup
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

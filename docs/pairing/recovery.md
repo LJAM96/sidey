@@ -20,14 +20,56 @@ transport-spike --udid <UDID> validate
 # pair_record=present / session=ok
 ```
 
-## 2. Backup the pairing record
+## 2. Backup the pairing state
 
-The pairing record is encrypted at rest in the edge agent vault (Phase H) and backed up separately (Phase N). While it exists, copy it off the host for safety:
+The wireless refresh path depends on state that cannot be recreated without a
+USB session or an Apple login: the RemotePairing (RPPairing) record used by
+the RSD tunnel, and the isideload cert identity (the free team has a 3/3 cert
+quota — a new cert name is rejected). Back these up together.
+
+On the VPS, a daily backup runs automatically:
 
 ```sh
-# usbmuxd keeps records in /var/lib/usbmuxd/ on Linux
-sudo tar czf /tmp/pairing-backup.tar.gz /var/lib/usbmuxd
+systemctl list-timers sidey-pairing-backup.timer
+ls -lt /var/backups/sidey/
 ```
+
+- `scripts/backup-pairing-state.sh` tars `/root/.pymobiledevice3`,
+  `/home/ubuntu/.pymobiledevice3`, `/var/lib/usbmuxd` (if present),
+  `/var/lib/sidey/isideload` and `/var/lib/sidey/refresh-agent`, encrypts
+  with gpg (AES-256, passphrase at `/root/.sidey-backup-passphrase`), verifies
+  the archive, and keeps the newest 7 (`SIDEY_BACKUP_RETENTION`).
+- Run it manually: `sudo /home/ubuntu/git/sidey-server/scripts/backup-pairing-state.sh`
+- The tarball is self-contained and encrypted: copy it off the host for real
+  redundancy (e.g. any local machine via `scp`/tailscale). Keep the
+  passphrase file together with it.
+
+### 2.1 Restore on a rebuilt VPS
+
+1. Install pymobiledevice3 and isideload state directories:
+
+```sh
+sudo mkdir -p /root/.pymobiledevice3 /var/lib/sidey
+gpg --batch --decrypt --passphrase-file /root/.sidey-backup-passphrase \
+    < pairing-state-*.tar.gz.gpg | sudo tar xzf - -C /
+```
+
+   The archive stores absolute paths, so this restores each file in place.
+
+2. Verify the RPPairing record parses and the tunnel can start:
+
+```sh
+sudo python3 -c "import plistlib; plistlib.load(open('/root/.pymobiledevice3/remote_00008120-001E11211184C01E.plist','rb')); print('ok')"
+sudo systemctl start sidey-wireless-tunnel.service
+cat /run/sidey/rsd-endpoint   # a live listener appears
+```
+
+3. If the cert identity was restored, the next refresh reuses the existing
+   certificate (no new name, no quota rejection).
+
+If no backup exists, re-pairing requires a USB session (section 3) and the
+cert identity must be re-created (it will consume the last free-team cert
+slot unless an old one is revoked).
 
 ## 3. Re-pair USB (iPhone / iPad)
 
@@ -107,7 +149,7 @@ sudo systemctl restart usbmuxd
 ## 6. Replacing a lost edge agent
 
 1. Deploy a new edge host with the same Tailscale identity (restore the Tailscale state volume) or a new tailnet node.
-2. Restore the encrypted pairing vault from the Phase N backup.
+2. Restore the pairing state from the section 2.1 backup.
 3. Re-attach devices: for each device, run `validate`; devices whose records were lost are re-paired with section 3.
 4. Update the device records' `agent_id` in the control plane.
 
