@@ -46,6 +46,40 @@ transport-spike --udid <UDID> pair
 transport-spike --udid <UDID> validate
 ```
 
+### 3.1 VPS only topology bootstrap (D13)
+
+With no edge host at home, pairing is bootstrapped once from any machine the phone can be plugged into. Preferred path (VirtualHere):
+
+1. Plug the phone into a machine running the VirtualHere server (or usbip); both machines must be on the tailnet. On the VPS, run the VirtualHere client so usbmuxd sees a virtual USB port.
+2. Pair through the agent as if the device were local:
+
+```sh
+transport-spike --udid <UDID> pair
+# accept the trust dialog on the phone
+transport-spike --udid <UDID> validate
+```
+
+3. The pairing record is stored in the agent vault on the VPS directly.
+
+Fallback path (record transfer), when VirtualHere is not available:
+
+1. On the local machine (Mac or Linux with usbmuxd): pair per section 3, then export the record:
+
+```sh
+transport-spike --udid <UDID> pair
+python3 - <<'EOF'
+# usbmuxd stores records per device; export the record directory for <UDID>
+# (Linux: /var/lib/usbmuxd/, macOS: ~/Library/Developer/PrivateFrameworks/
+# CoreDevice.framework/.../pairairport/*.plist). Copy the matching record.
+EOF
+```
+
+2. Transfer the record to the VPS (scp / tailscale serve / secret copy) and import it into the agent's pairing vault (vault path: `pairing-vault` volume, agent reads it at startup).
+3. The agent validates with `validate` (it uses the vault record instead of usbmuxd for TCP connections).
+4. The phone must be on the tailnet (Tailscale app or home subnet router) so the agent's Tailscale address reaches it.
+
+Once a record exists on the VPS, it survives only if backed up; losing it means another USB session on a local machine.
+
 5. If the device still rejects the record, clear the stale record first:
 
 ```sh

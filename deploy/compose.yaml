@@ -61,8 +61,11 @@ services:
     environment:
       PORT: "8080"
       DATABASE_URL: postgres://sidey@postgres:5432/sidey
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      SIDEY_ADMIN_API_KEY: ${SIDEY_ADMIN_API_KEY:-}
     secrets:
       - session_signing_key
+      - db_password
     depends_on:
       migrate:
         condition: service_completed_successfully

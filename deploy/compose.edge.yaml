@@ -41,6 +41,27 @@ services:
       - ts-state:/var/lib/tailscale
     networks: [internal]
 
+  # VirtualHere client (D13): makes the USB device plugged into a VirtualHere
+  # server at home appear as a local USB port, so usbmuxd on this host can
+  # pair the phone. Privileged: loads the host's vhci-hcd module and creates
+  # ports under /dev/bus/usb. Host prerequisites: usbmuxd installed and
+  # running on this host (apt install usbmuxd), modprobe vhci-hcd. Traffic
+  # stays on the tailnet. Proprietary software; see packaging/docker/README.md.
+  virtualhere-client:
+    build:
+      context: ..
+      dockerfile: packaging/docker/virtualhere-client/Dockerfile
+    restart: unless-stopped
+    privileged: true
+    environment:
+      # Tailscale host:port of the home VirtualHere server, e.g. 100.64.0.5:7575.
+      # Leave unset to rely on autodiscovery only.
+      VH_SERVER: ${VH_SERVER:-}
+    volumes:
+      - vh-client-state:/root
+    networks: [internal]
+
 volumes:
   pairing-vault:
   ts-state:
+  vh-client-state:

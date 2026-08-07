@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart usbmuxd if an attached iPhone is not visible to it (D13)
+After=usbmuxd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sidey-usbmuxd-watch.sh

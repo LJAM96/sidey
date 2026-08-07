@@ -6,11 +6,41 @@ services:
   anisette-v3:
     # No licence declared upstream (LICENSING.md flag): must not be
     # redistributed. The operator pulls this image themselves.
-    image: dadoum/anisette-v3-server:latest
+    # omnisette-server serves BOTH the v1 protocol AltServer-Linux (Phase B)
+    # requires and the v3 protocol SideStore uses; it is the server behind
+    # the public armconverter.com endpoint. Self-hosted v1 is safe (the lock
+    # risk is shared servers). Source: SideStore/omnisette-server.
+    image: ghcr.io/sidestore/omnisette-server:latest
+    profiles: ["compatibility"]
+    restart: unless-stopped
+    ports:
+      # Host-local only: AltServer-Linux (Phase B) runs on the host and needs
+      # this endpoint; never expose it beyond 127.0.0.1.
+      # The container listens on 80 (per upstream README: -p 6969:80); 6970 is
+      # used by the v1 JSON shim (sidey-anisette-v1-json) that serves AltServer
+      # on 6969, because omnisette's / responds with text/plain (not JSON), which
+      # AltServer's extract_json() rejects.
+      - "127.0.0.1:6970:80"
+      # Tailnet-only: the phone's SideStore reaches this endpoint over
+      # Tailscale for its v3 anisette requests (Settings -> Anisette URL).
+      - "100.100.12.70:6971:80"
+    volumes:
+      # Persists the ADI machine data; without it, a fresh machine ID is
+      # provisioned on every restart and Apple may reject the brand-new ID.
+      - anisette-state:/opt/omnisette-server/lib
+    networks: [internal]
+
+  anisette-catalog:
+    # SideStore 0.6+ replaced the single anisette URL with a server catalog
+    # JSON ({"servers":[{name,address}]}); this serves ours over the tailnet
+    # so the phone can add the self-hosted endpoint without importing a file.
+    image: nginx:alpine
     profiles: ["compatibility"]
     restart: unless-stopped
     volumes:
-      - anisette-state:/opt/anisette-v3-server
+      - ./anisette:/usr/share/nginx/html:ro
+    ports:
+      - "100.100.12.70:6968:80"
     networks: [internal]
 
   sidestore-vpn:

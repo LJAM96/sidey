@@ -1,0 +1,8 @@
+{
+  "servers": [
+    {
+      "name": "sidey VPS (self-hosted)",
+      "address": "http://100.100.12.70:6971"
+    }
+  ]
+}

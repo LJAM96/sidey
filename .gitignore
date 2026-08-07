@@ -1,1 +1,4 @@
 target/
+
+# Deployment variables (may later hold TS_AUTHKEY).
+deploy/.env

@@ -1,0 +1,10 @@
+[Unit]
+Description=Watchdog for usbmuxd visibility of the virtual USB iPhone (D13)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+Unit=sidey-usbmuxd-watch.service
+
+[Install]
+WantedBy=timers.target

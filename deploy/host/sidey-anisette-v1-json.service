@@ -1,0 +1,13 @@
+[Unit]
+Description=Sidey anisette v1 JSON shim for AltServer-Linux
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/sidey-anisette-v1-json.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

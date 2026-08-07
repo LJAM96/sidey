@@ -88,6 +88,12 @@ Adopted 2026-08-06. atvloadly is AGPL-3.0 (verified in Phase A), and the tvOS pr
 
 Adopted 2026-08-06. The platform supports enrolling more than one Apple account from day one. Each account is a separate team with its own limits (three App IDs, ten registered devices, seven day profiles on free accounts). Each application channel keeps a stable team assignment so refresh always uses the signing team. Signing may fall back to another account when the primary account cannot sign, provided the fallback team registers the bundle ID itself. The dashboard shows per account slot usage (registered App ID and device counts) and warns before an account is full.
 
+### D13: Oracle VPS is the only always-on host
+
+Adopted 2026-08-06. There is no edge host at home; the Oracle VPS is the only always-on machine. The VPS runs the control plane and the device agent together. The agent reaches devices over Tailscale: the phone must carry the Tailscale app (or the home network must have a Tailscale subnet router). This is the plan's experimental "direct Oracle to device communication" topology; Phase B transport proof must validate it (locked device, restarts, refresh reliability). A home edge host remains the fallback if the proof fails.
+
+Pairing is bootstrapped once through a USB-over-network session: the user runs a VirtualHere (or usbip) server on any machine where the phone is physically plugged in, and the VPS agent's usbmuxd sees the virtual USB port (VirtualHere traffic stays inside Tailscale; VirtualHere is proprietary, usbip is the open alternative). The pairing record then lands in the agent vault directly. Fallback: pair locally, export the record, import it into the agent vault (pairing records are host independent once created). USB re-pairing always requires physical access to some local machine, so the pairing record vault must be backed up (Phase N).
+
 ## Product boundaries
 
 ### Included
@@ -971,18 +977,40 @@ Test with the phone unlocked, locked and recently restarted.
 
 Test iOS 27 remote pairing separately from persistent Lockdown pairing.
 
-Run the same transport experiment through Oracle and Tailscale.
+Run the same transport experiment through Oracle and Tailscale, with the phone on the tailnet (Tailscale app or home subnet router) and the agent pairing through a VirtualHere USB-over-network session (or the record import fallback) (D13).
 
 Perform equivalent Apple TV pairing and installation using atvloadly and Impactor.
 
 ### Deliverables
 
 ```text
-transport-spike CLI (scaffolded in rust/transport-spike, pending device testing)
+transport-spike CLI (scaffolded in rust/transport-spike; transport proof started 2026-08-06)
 Captured structured logs
 Compatibility results
 Network topology decision
 Documented pairing recovery procedure
+```
+
+### Transport proof progress (2026-08-06)
+
+```text
+D13 topology live on the Oracle VPS: VirtualHere client sidecar (packaging/
+docker/virtualhere-client) over Tailscale to the home hub, host usbmuxd
+pairing the iPhone 15 Pro (iOS 27.0) remotely. Verified:
+  - list / info / validate / apps (113 apps listed) pass over the link
+  - pairing record lands in /var/lib/lockdown; backed up to deploy/secrets
+  - wireless debugging (WiFiAddress) present on iOS 27; remote pairing (iOS
+    27 network onboarding) still to test
+Open issues:
+  - usbmuxd drops the device on "RX transfer stalled" over slow links and
+    never re-enumerates; host watchdog (deploy/host/sidey-usbmuxd-watch.*)
+    restarts usbmuxd on the 30s timer (pairing survives, record in
+    /var/lib/lockdown)
+  - locked phone stalls lockdown exchanges (passcode prompt observed); tests
+    with locked/restarted phone still to run
+Remaining Phase B work: signed test IPA (D6 Impactor run) for install /
+upgrade / verify / uninstall / documents; Apple TV via atvloadly + Impactor;
+restart and locked-device scenarios.
 ```
 
 ### Exit criteria

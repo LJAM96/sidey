@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidey</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-monospace, monospace; margin: 0; background: #111; color: #ddd; }
+  header { padding: 12px 20px; background: #1a1a1a; border-bottom: 1px solid #333; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; color: #fff; }
+  #key { background: #222; color: #ddd; border: 1px solid #444; padding: 6px 8px; width: 320px; }
+  button { background: #2a2a2a; color: #fff; border: 1px solid #444; padding: 6px 12px; cursor: pointer; }
+  button:hover { background: #333; }
+  #status { color: #8a8; }
+  main { padding: 20px; }
+  section { margin-bottom: 28px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: #999; border-bottom: 1px solid #2a2a2a; padding-bottom: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid #242424; white-space: nowrap; }
+  th { color: #aaa; background: #161616; position: sticky; top: 0; }
+  tr:hover td { background: #1c1c1c; }
+  .ok { color: #6c6; } .warn { color: #cc6; } .bad { color: #c66; } .muted { color: #777; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sidey control plane</h1>
+  <input id="key" type="password" placeholder="admin API key">
+  <button id="save">Save</button>
+  <span id="status"></span>
+</header>
+<main>
+  <section><h2>Agents</h2><div id="agents"></div></section>
+  <section><h2>Devices</h2><div id="devices"></div></section>
+  <section><h2>Jobs</h2><div id="jobs"></div></section>
+  <section><h2>Applications</h2><div id="applications"></div></section>
+  <section><h2>Deployments</h2><div id="deployments"></div></section>
+</main>
+<script>
+const stateClass = s => s === "completed" || s === "ok" || s === "online" || s === "connected" ? "ok"
+  : s === "pending" || s === "claimed" || s === "in_progress" ? "warn" : "bad";
+function table(title, rows, cols) {
+  if (!rows.length) return `<p class="muted">no ${title}</p>`;
+  const head = cols.map(c => `<th>${c}</th>`).join("");
+  const body = rows.map(r => `<tr>${cols.map(c => `<td class="${c === "state" || c === "connection_state" ? stateClass(r[c]) : ""}">${r[c] ?? ""}</td>`).join("")}</tr>`).join("");
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+function fmt(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") {
+    if (v instanceof Date || /^\d{4}-\d{2}-\d{2}/.test(v)) return new Date(v).toLocaleString();
+    return JSON.stringify(v);
+  }
+  return String(v);
+}
+async function load() {
+  const key = document.getElementById("key").value;
+  if (!key) return;
+  const res = await fetch("/api/v1/dashboard/agents", { headers: { Authorization: "Bearer " + key } });
+  if (!res.ok) { document.getElementById("status").textContent = "unauthorized"; return; }
+  document.getElementById("status").textContent = new Date().toLocaleTimeString();
+  for (const [id, cols] of Object.entries({
+    agents: ["name", "connection_state", "last_heartbeat_at", "software_version", "tailnet_identity"],
+    devices: ["udid", "platform", "device_name", "os_version", "agent_name", "pairing_status"],
+    jobs: ["id", "job_type", "state", "attempt", "device_id", "error_category", "created_at"],
+    applications: ["name", "publisher", "trust_classification", "created_at"],
+    deployments: ["id", "target", "desired_version", "current_state", "updated_at"],
+  })) {
+    const t = await (await fetch("/api/v1/dashboard/" + id, { headers: { Authorization: "Bearer " + key } })).json();
+    const rows = t.rows.map(r => Object.fromEntries(t.columns.map((c, i) => [c, fmt(Object.values(r)[i])])));
+    document.getElementById(id).innerHTML = table(id, rows, cols);
+  }
+}
+document.getElementById("save").onclick = () => { localStorage.setItem("sidey_admin_key", document.getElementById("key").value); load(); };
+document.getElementById("key").value = localStorage.getItem("sidey_admin_key") || "";
+setInterval(load, 10000);
+load();
+</script>
+</body>
+</html>
