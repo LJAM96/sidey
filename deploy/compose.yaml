@@ -67,6 +67,9 @@ services:
       SIDEY_ADMIN_API_KEY: ${SIDEY_ADMIN_API_KEY:-}
       SCHEDULER_INTERVAL_SECONDS: "300"
       REFRESH_LEAD_DAYS: "2"
+      ARTIFACT_DIR: /var/lib/sidey/artifacts
+    volumes:
+      - sidey-artifacts:/var/lib/sidey/artifacts
     secrets:
       - session_signing_key
       - db_password
@@ -100,6 +103,7 @@ services:
 
 volumes:
   pgdata:
+  sidey-artifacts:
 
 secrets:
   db_password:

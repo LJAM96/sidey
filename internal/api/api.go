@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/google/uuid"
+	"sidey/internal/artifacts"
 	"sidey/internal/auth"
 	"sidey/internal/audit"
 	"sidey/internal/jobs"
@@ -20,22 +21,24 @@ import (
 )
 
 type Server struct {
-	pool     *pgxpool.Pool
-	logger   *slog.Logger
-	audit    *audit.Client
-	jobs     *jobs.Service
-	adminKey string
-	now      func() time.Time
+	pool      *pgxpool.Pool
+	logger    *slog.Logger
+	audit     *audit.Client
+	jobs      *jobs.Service
+	artifacts *artifacts.Store
+	adminKey  string
+	now       func() time.Time
 }
 
-func NewServer(pool *pgxpool.Pool, logger *slog.Logger, auditClient *audit.Client, jobService *jobs.Service, adminKey string) *Server {
+func NewServer(pool *pgxpool.Pool, logger *slog.Logger, auditClient *audit.Client, jobService *jobs.Service, artifactStore *artifacts.Store, adminKey string) *Server {
 	return &Server{
-		pool:     pool,
-		logger:   logger,
-		audit:    auditClient,
-		jobs:     jobService,
-		adminKey: adminKey,
-		now:      time.Now,
+		pool:      pool,
+		logger:    logger,
+		audit:     auditClient,
+		jobs:      jobService,
+		artifacts: artifactStore,
+		adminKey:  adminKey,
+		now:       time.Now,
 	}
 }
 
@@ -46,6 +49,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /", http.FileServerFS(webassets.Sub))
 
 	mux.Handle("POST /api/v1/admin/enrolment-tokens", s.admin(s.handleCreateEnrolmentToken))
+
+	mux.Handle("POST /api/v1/artifacts", s.admin(s.handleUploadArtifact))
+	mux.Handle("PATCH /api/v1/artifacts/{id}", s.admin(s.handleSetArtifactState))
+	mux.Handle("GET /api/v1/artifacts/{id}/download", s.admin(s.handleDownloadArtifact))
 
 	mux.Handle("POST /api/v1/agents/enrol", s.enrolmentToken(s.handleEnrolAgent))
 	mux.Handle("POST /api/v1/agents/me/heartbeat", s.agent(s.handleHeartbeat))
@@ -59,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/dashboard/devices", s.admin(s.handleListDevices))
 	mux.Handle("GET /api/v1/dashboard/jobs", s.admin(s.handleListJobs))
 	mux.Handle("GET /api/v1/dashboard/applications", s.admin(s.handleListApplications))
+	mux.Handle("GET /api/v1/dashboard/artifacts", s.admin(s.handleListArtifacts))
 	mux.Handle("GET /api/v1/dashboard/deployments", s.admin(s.handleListDeployments))
 	mux.Handle("GET /api/v1/dashboard/refresh", s.admin(s.handleListRefresh))
 

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/google/uuid"
+	"sidey/internal/artifacts"
 	"sidey/internal/audit"
 	"sidey/internal/jobs"
 	"sidey/internal/storage"
@@ -49,7 +50,13 @@ func TestMain(m *testing.M) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	auditClient := audit.New(p, logger)
 	jobService := jobs.NewService(p, auditClient, 60*time.Second)
-	server = NewServer(p, logger, auditClient, jobService, adminKey)
+	artifactDir, err := os.MkdirTemp("", "sidey-artifacts-test-*")
+	if err != nil {
+		fmt.Println("artifact dir:", err)
+		os.Exit(1)
+	}
+	artifactStore := artifacts.NewStore(artifactDir)
+	server = NewServer(p, logger, auditClient, jobService, artifactStore, adminKey)
 	httpServer = httptest.NewServer(server.Handler())
 	pool = p
 

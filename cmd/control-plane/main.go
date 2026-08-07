@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"sidey/internal/api"
+	"sidey/internal/artifacts"
 	"sidey/internal/audit"
 	"sidey/internal/jobs"
 	"sidey/internal/scheduler"
@@ -51,7 +52,14 @@ func main() {
 	refreshLead := time.Duration(envInt("REFRESH_LEAD_DAYS", 2)*24) * time.Hour
 	jobService := jobs.NewService(pool, auditClient, lease, jobs.WithRefreshLead(refreshLead))
 
-	server := api.NewServer(pool, logger, auditClient, jobService, os.Getenv("SIDEY_ADMIN_API_KEY"))
+	// Immutable IPA repository (Phase E).
+	artifactDir := envStr("ARTIFACT_DIR", "/var/lib/sidey/artifacts")
+	artifactStore := artifacts.NewStore(artifactDir)
+	if err := artifactStore.EnsureDir(); err != nil {
+		logger.Warn("artifact dir not writable", "dir", artifactDir, "error", err)
+	}
+
+	server := api.NewServer(pool, logger, auditClient, jobService, artifactStore, os.Getenv("SIDEY_ADMIN_API_KEY"))
 
 	// Refresh scheduler: enqueues refresh jobs for deployments whose profile
 	// is within the lead window of expiry.
@@ -126,6 +134,13 @@ func envInt(name string, fallback int) int {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
+	}
+	return fallback
+}
+
+func envStr(name string, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
 	}
 	return fallback
 }

@@ -80,6 +80,15 @@ func (s *Server) handleListApplications(w http.ResponseWriter, r *http.Request) 
 		FROM applications ORDER BY created_at`)
 }
 
+// handleListArtifacts lists the IPA repository with metadata and quarantine
+// state, newest first.
+func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
+	s.queryTable(w, r, `
+		SELECT id, sha256, filename, version, build_number, bundle_identifier,
+		       platform, min_os_version, source, quarantine_state, imported_at
+		FROM artifacts ORDER BY imported_at DESC LIMIT 200`)
+}
+
 func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	s.queryTable(w, r, `
 		SELECT id, device_id, channel_id, target, desired_version,

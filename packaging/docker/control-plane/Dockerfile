@@ -11,7 +11,9 @@ COPY webassets.go ./
 RUN CGO_ENABLED=0 go build -o /out/control-plane ./cmd/control-plane
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+    && mkdir -p /var/lib/sidey/artifacts \
+    && chown 65534:65534 /var/lib/sidey/artifacts
 COPY --from=builder /out/control-plane /usr/local/bin/control-plane
 USER 65534:65534
 EXPOSE 8080

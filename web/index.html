@@ -35,6 +35,7 @@
   <section><h2>Devices</h2><div id="devices"></div></section>
   <section><h2>Jobs</h2><div id="jobs"></div></section>
   <section><h2>Applications</h2><div id="applications"></div></section>
+  <section><h2>Artifacts</h2><div id="artifacts"></div></section>
   <section><h2>Deployments</h2><div id="deployments"></div></section>
   <section><h2>Refresh calendar</h2><div id="refresh"></div></section>
 </main>
@@ -66,6 +67,7 @@ async function load() {
     devices: ["udid", "platform", "device_name", "os_version", "agent_name", "pairing_status"],
     jobs: ["id", "job_type", "state", "attempt", "device_id", "error_category", "created_at"],
     applications: ["name", "publisher", "trust_classification", "created_at"],
+    artifacts: ["sha256", "filename", "version", "build_number", "bundle_identifier", "platform", "min_os_version", "quarantine_state", "imported_at"],
     deployments: ["id", "target", "desired_version", "current_state", "updated_at"],
     refresh: ["device_name", "profile_expiry_at", "next_refresh_due_at", "last_refresh_result", "last_refresh_at", "refresh_job_state", "error_category", "job_updated_at"],
   })) {
