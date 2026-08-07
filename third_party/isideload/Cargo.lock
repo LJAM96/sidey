@@ -3948,6 +3948,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "signonly"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "isideload",
+ "plist",
+ "plist-macro",
+ "rootcause",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zip",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

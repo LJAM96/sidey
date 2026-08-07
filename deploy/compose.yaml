@@ -89,11 +89,28 @@ services:
       context: ..
       dockerfile: packaging/docker/signing-worker/Dockerfile
     restart: unless-stopped
+    # Host networking: the worker signs via Apple/anisette services that live
+    # on the host loopback (omnisette on 127.0.0.1:6970, control-plane on
+    # 127.0.0.1:8080), exactly like the refresh agent on the host.
+    network_mode: host
     environment:
       PORT: "8090"
+      SIDEY_CONTROL_PLANE_URL: http://127.0.0.1:8080
+      SIDEY_ANISETTE_URL: http://127.0.0.1:6970
+      SIDEY_AGENT_STATE_DIR: /var/lib/sidey/signing-worker
+      SIDEY_STATE_RUNTIME_DIR: /run/sidey/signing-state
+      SIDEY_ENROLMENT_TOKEN: ${SIDEY_SIGNING_WORKER_TOKEN:-}
+      SIDEY_IMPORT_STATE_DIR: ${SIDEY_SIGNING_IMPORT_DIR:-}
+      SIDEY_2FA_CODE_FILE: /2fa/2fa-code.txt
+    volumes:
+      - sidey-signing-state:/var/lib/sidey/signing-worker
+      - /var/lib/sidey/2fa:/2fa
     secrets:
       - apple_credential_key
-    networks: [internal]
+      - apple_credentials
+    depends_on:
+      control-plane:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"]
       interval: 10s
@@ -104,6 +121,7 @@ services:
 volumes:
   pgdata:
   sidey-artifacts:
+  sidey-signing-state:
 
 secrets:
   db_password:
@@ -112,6 +130,8 @@ secrets:
     file: ./secrets/session_signing_key
   apple_credential_key:
     file: ./secrets/apple_credential_key
+  apple_credentials:
+    file: ./secrets/apple_credentials
 
 networks:
   internal: {}

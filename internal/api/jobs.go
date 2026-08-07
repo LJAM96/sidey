@@ -23,17 +23,19 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, job)
 }
 
-// handleClaimJobs atomically claims pending jobs for the agent's devices.
+// handleClaimJobs atomically claims pending jobs for the agent's devices,
+// optionally filtered by job type (the signing worker claims sign jobs).
 func (s *Server) handleClaimJobs(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DeviceIDs []uuid.UUID `json:"device_ids"`
+		JobTypes  []string    `json:"job_types"`
 		Limit     int         `json:"limit"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	claimed, err := s.jobs.Claim(r.Context(), agentID(r.Context()), req.DeviceIDs, req.Limit)
+	claimed, err := s.jobs.Claim(r.Context(), agentID(r.Context()), req.DeviceIDs, req.JobTypes, req.Limit)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "claim failed")
 		return

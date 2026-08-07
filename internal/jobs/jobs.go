@@ -35,6 +35,13 @@ const (
 // completion hook then reschedules the next refresh from the new expiry.
 const JobTypeRefresh = "refresh"
 
+// JobTypeSign identifies sign jobs (Phase F). They are created for an
+// approved artifact + device and claimed by the signing worker, which signs
+// the IPA with the account's certificate identity and uploads the signed
+// derivative. Sign jobs are not tied to a device agent: any worker that
+// declares the signing capability may claim them.
+const JobTypeSign = "sign"
+
 // refreshProfileValidity is the assumed validity of a freshly issued free-team
 // provisioning profile (7 days). The refresh agent does not report the exact
 // new expiry today, so the completion hook schedules the next refresh from
@@ -207,9 +214,23 @@ func collectUUIDs(rows pgx.Rows) ([]uuid.UUID, error) {
 	return ids, rows.Err()
 }
 
+// nullableJobTypes returns nil for an empty slice so callers can pass it as a
+// PostgreSQL text[] that matches everything when NULL.
+func nullableJobTypes(types []string) any {
+	if len(types) == 0 {
+		return nil
+	}
+	return types
+}
+
 // Claim atomically claims up to limit pending jobs for the caller's devices.
 // Device rows are locked FOR UPDATE, serialising concurrent claims per device.
-func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid.UUID, limit int) ([]*Job, error) {
+// When jobTypes is non-empty, only jobs of those types are claimed; sign jobs
+// are claimable by any agent (the signing worker does not own the target
+// device), while other types remain restricted to the agent's own devices. A
+// claim without jobTypes never delivers sign jobs: they belong to the signing
+// worker, and generic agents would only fail them.
+func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid.UUID, jobTypes []string, limit int) ([]*Job, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 10
 	}
@@ -220,7 +241,35 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 	defer tx.Rollback(ctx)
 
 	var devices []uuid.UUID
-	if len(deviceIDs) > 0 {
+	if len(jobTypes) > 0 {
+		rows, err := tx.Query(ctx,
+			`SELECT j.device_id
+			 FROM jobs j
+			 WHERE j.job_type = ANY($1) AND j.state = $2
+			   AND (j.retry_at IS NULL OR j.retry_at <= now())
+			   AND j.device_id IS NOT NULL
+			 GROUP BY j.device_id
+			 ORDER BY j.device_id`,
+			jobTypes, StatePending)
+		if err != nil {
+			return nil, err
+		}
+		devices, err = collectUUIDs(rows)
+		if err != nil {
+			return nil, err
+		}
+		if len(devices) > 0 {
+			rows, err := tx.Query(ctx,
+				`SELECT id FROM devices WHERE id = ANY($1) ORDER BY id FOR UPDATE`,
+				devices)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := collectUUIDs(rows); err != nil {
+				return nil, err
+			}
+		}
+	} else if len(deviceIDs) > 0 {
 		rows, err := tx.Query(ctx,
 			`SELECT id FROM devices WHERE id = ANY($1) AND agent_id = $2 ORDER BY id FOR UPDATE`,
 			deviceIDs, agentID)
@@ -253,9 +302,11 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 			FROM jobs
 			WHERE device_id = $1 AND state = $2
 			  AND (retry_at IS NULL OR retry_at <= now())
+			  AND (job_type <> $3 OR $4::text[] IS NOT NULL)
+			  AND ($4::text[] IS NULL OR job_type = ANY($4))
 			ORDER BY created_at, id
 			LIMIT 1
-			FOR UPDATE SKIP LOCKED`, deviceID, StatePending)
+			FOR UPDATE SKIP LOCKED`, deviceID, StatePending, JobTypeSign, nullableJobTypes(jobTypes))
 		job, err := scanJob(row)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -440,9 +491,9 @@ func (s *Service) leaseSeconds() string {
 }
 
 // Reap resets jobs whose lease expired back to pending with a retry delay,
-// re-queues failed refresh jobs (the app must be kept alive, so a refresh
-// retries until it succeeds), and marks agents offline when their heartbeat
-// is stale. Called periodically by the scheduler.
+// re-queues failed refresh and sign jobs (an app must be kept signed, and a
+// sign request may fail transiently), and marks agents offline when their
+// heartbeat is stale. Called periodically by the scheduler.
 func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -454,9 +505,9 @@ func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 		SELECT id, device_id, attempt
 		FROM jobs
 		WHERE (state IN ($1, $2) AND lease_expires_at < now())
-		   OR (state = $3 AND job_type = $4)
+		   OR (state = $3 AND job_type IN ($4, $5))
 		ORDER BY COALESCE(lease_expires_at, now())
-		FOR UPDATE SKIP LOCKED`, StateClaimed, StateInProgress, StateFailed, JobTypeRefresh)
+		FOR UPDATE SKIP LOCKED`, StateClaimed, StateInProgress, StateFailed, JobTypeRefresh, JobTypeSign)
 	if err != nil {
 		return 0, err
 	}

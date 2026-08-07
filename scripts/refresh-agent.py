@@ -132,7 +132,8 @@ def find_device_uuid(key):
 def claim(key, device_uuid):
     status, resp = request(
         "POST", "/api/v1/jobs/claim",
-        {"device_ids": [device_uuid], "limit": 1}, bearer=key, timeout=30)
+        {"device_ids": [device_uuid], "job_types": ["refresh"], "limit": 1},
+        bearer=key, timeout=30)
     if status != 200:
         raise RuntimeError(f"claim failed ({status}): {resp}")
     return resp.get("jobs", [])

@@ -53,6 +53,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/artifacts", s.admin(s.handleUploadArtifact))
 	mux.Handle("PATCH /api/v1/artifacts/{id}", s.admin(s.handleSetArtifactState))
 	mux.Handle("GET /api/v1/artifacts/{id}/download", s.admin(s.handleDownloadArtifact))
+	mux.Handle("POST /api/v1/sign-jobs", s.admin(s.handleCreateSignJob))
+	mux.Handle("POST /api/v1/signed-artifacts", s.agent(s.handleUploadSignedArtifact))
+	mux.Handle("GET /api/v1/agents/artifacts/{id}/download", s.agent(s.handleAgentDownloadArtifact))
 
 	mux.Handle("POST /api/v1/agents/enrol", s.enrolmentToken(s.handleEnrolAgent))
 	mux.Handle("POST /api/v1/agents/me/heartbeat", s.agent(s.handleHeartbeat))
@@ -67,6 +70,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/dashboard/jobs", s.admin(s.handleListJobs))
 	mux.Handle("GET /api/v1/dashboard/applications", s.admin(s.handleListApplications))
 	mux.Handle("GET /api/v1/dashboard/artifacts", s.admin(s.handleListArtifacts))
+	mux.Handle("GET /api/v1/dashboard/signed-artifacts", s.admin(s.handleListSignedArtifacts))
+	mux.Handle("GET /api/v1/dashboard/accounts", s.admin(s.handleListAccounts))
 	mux.Handle("GET /api/v1/dashboard/deployments", s.admin(s.handleListDeployments))
 	mux.Handle("GET /api/v1/dashboard/refresh", s.admin(s.handleListRefresh))
 

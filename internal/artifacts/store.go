@@ -37,6 +37,12 @@ func (s *Store) Exists(sha256 string) bool {
 	return err == nil
 }
 
+// Remove deletes a stored file. Callers use it to clean up a file that was
+// saved but never recorded (e.g. a failed signed-artifact upload).
+func (s *Store) Remove(sha256 string) {
+	os.Remove(s.Path(sha256))
+}
+
 // Save streams r to disk, computing the sha256 while it goes. On success the
 // file is named by its content hash; a concurrent or repeated upload of the
 // same bytes lands on the same file. The caller must still check the

@@ -22,6 +22,22 @@ use idevice::provider::IdeviceProvider;
 use rootcause::{option_ext::OptionExt, prelude::*};
 use tracing::info;
 
+/// The result of a signing operation: the signed app bundle plus the
+/// metadata the control plane needs to record the signed artifact and
+/// schedule the next refresh.
+pub struct SignedApp {
+    pub bundle_dir: PathBuf,
+    pub special: Option<SpecialApp>,
+    /// Hexadecimal certificate serial of the signing identity.
+    pub cert_serial: String,
+    /// Expiry of the provisioning profile embedded in the signed bundle.
+    pub profile_expiry: plist::Date,
+    /// The developer team the app was signed for.
+    pub team_id: String,
+    /// The app bundle identifier after team-suffixing (e.g. com.foo.app.TEAMID).
+    pub signed_bundle_identifier: String,
+}
+
 pub struct Sideloader {
     team_selection: TeamSelection,
     storage: Box<dyn SideloadingStorage>,
@@ -61,14 +77,16 @@ impl Sideloader {
         }
     }
 
-    /// Sign the app at the provided path and return the path to the signed app bundle (in a temp dir). To sign and install, see [`Self::install_app`].
+    /// Sign the app at the provided path and return the signed app bundle
+    /// (in a temp dir) plus signing metadata. To sign and install, see
+    /// [`Self::install_app`].
     pub async fn sign_app(
         &mut self,
         app_path: PathBuf,
         team: Option<DeveloperTeam>,
         // this will be replaced with proper entitlement handling later
         increased_memory_limit: bool,
-    ) -> Result<(PathBuf, Option<SpecialApp>), Report> {
+    ) -> Result<SignedApp, Report> {
         let team = match team {
             Some(t) => t,
             None => self.get_team().await?,
@@ -179,7 +197,14 @@ impl Sideloader {
 
         info!("App signed!");
 
-        Ok((app.bundle.bundle_dir.clone(), special))
+        Ok(SignedApp {
+            bundle_dir: app.bundle.bundle_dir.clone(),
+            special,
+            cert_serial: cert_identity.get_serial_number(),
+            profile_expiry: provisioning_profile.date_expire,
+            team_id: team.team_id.clone(),
+            signed_bundle_identifier: main_app_id_str.clone(),
+        })
     }
 
     #[cfg(feature = "install")]
@@ -198,25 +223,25 @@ impl Sideloader {
             .ensure_device_registered(&team, &device_info.name, &device_info.udid, None)
             .await?;
 
-        let (signed_app_path, special_app) = self
+        let signed_app = self
             .sign_app(app_path, Some(team), increased_memory_limit)
             .await?;
 
         info!("Transferring App...");
 
-        crate::sideload::install::install_app(device_provider, &signed_app_path, |progress| {
+        crate::sideload::install::install_app(device_provider, &signed_app.bundle_dir, |progress| {
             info!("Installing: {}%", progress);
         })
         .await
         .context("Failed to install app on device")?;
 
         if self.delete_app_after_install
-            && let Err(e) = tokio::fs::remove_dir_all(signed_app_path).await
+            && let Err(e) = tokio::fs::remove_dir_all(signed_app.bundle_dir).await
             {
             tracing::warn!("Failed to remove temporary signed app file: {}", e);
         }
 
-        Ok(special_app)
+        Ok(signed_app.special)
     }
 
     #[cfg(feature = "install")]
@@ -236,25 +261,25 @@ impl Sideloader {
             .ensure_device_registered(&team, device_name, device_udid, None)
             .await?;
 
-        let (signed_app_path, special_app) = self
+        let signed_app = self
             .sign_app(app_path, Some(team), increased_memory_limit)
             .await?;
 
         info!("Transferring App...");
 
-        crate::sideload::install::install_app_rsd(provider, handshake, &signed_app_path, |progress| {
+        crate::sideload::install::install_app_rsd(provider, handshake, &signed_app.bundle_dir, |progress| {
             info!("Installing: {}%", progress);
         })
         .await
         .context("Failed to install app on device")?;
 
         if self.delete_app_after_install
-            && let Err(e) = tokio::fs::remove_dir_all(signed_app_path).await
+            && let Err(e) = tokio::fs::remove_dir_all(signed_app.bundle_dir).await
         {
             tracing::warn!("Failed to remove temporary signed app file: {}", e);
         }
 
-        Ok(special_app)
+        Ok(signed_app.special)
     }
 
     /// Get the developer team according to the configured team selection behavior
