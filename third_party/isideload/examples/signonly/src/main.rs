@@ -12,6 +12,7 @@
 //!   ANISETTE_URL           anisette v3 provider URL (default http://127.0.0.1:6970)
 //!   DEVICE_UDID            target device UDID (registered with the team)
 //!   DEVICE_NAME            target device display name
+//!   DEVICE_TYPE            target platform: ios|tvos|watchos (default ios)
 //!   MACHINE_NAME           certificate identity machine name (default isideload-minimal)
 //!   SIGNONLY_2FA_CODE_FILE path to a file containing a 2FA code (default /tmp/opencode/2fa-code.txt)
 //!
@@ -254,10 +255,21 @@ async fn main() {
         None => fail("other", "missing output IPA argument"),
     });
 
-    let device_name = env::var("DEVICE_NAME").unwrap_or_else(|_| "ACU Covert Camera".to_string());
-    let device_udid = env::var("DEVICE_UDID")
-        .unwrap_or_else(|_| "00008120-001E11211184C01E".to_string());
+    let device_name = env::var("DEVICE_NAME").unwrap_or_else(|_| "Sidey signing target".to_string());
+    let device_udid = env::var("DEVICE_UDID").unwrap_or_default();
+    if device_udid.is_empty() {
+        fail(
+            "other",
+            "missing DEVICE_UDID: refusing to sign without a target device (the installed app would not activate)",
+        );
+    }
     let machine_name = env::var("MACHINE_NAME").unwrap_or_else(|_| "isideload-minimal".to_string());
+    let device_type = match env::var("DEVICE_TYPE").as_deref() {
+        Ok("tvos") => Some(isideload::dev::device_type::DeveloperDeviceType::Tvos),
+        Ok("watchos") => Some(isideload::dev::device_type::DeveloperDeviceType::Watchos),
+        Ok("ios") | Ok("") | Err(_) => None,
+        Ok(other) => fail("other", &format!("unknown DEVICE_TYPE {other:?} (ios|tvos|watchos)")),
+    };
 
     let get_2fa_code = |params: TwoFactorCallbackParams| get_2fa_code(&params);
 
@@ -300,7 +312,7 @@ async fn main() {
     };
 
     if let Err(e) = dev_session
-        .ensure_device_registered(&team, &device_name, &device_udid, None)
+        .ensure_device_registered(&team, &device_name, &device_udid, device_type.clone())
         .await
     {
         let (category, message) = classify(&e);
@@ -328,6 +340,7 @@ async fn main() {
         .max_certs_behavior(MaxCertsBehavior::Prompt(Box::new(cert_selection_prompt)))
         .storage(Box::new(FsStorage::new(storage_dir())))
         .machine_name(machine_name)
+        .device_type(device_type.clone())
         .build();
 
     let signed_app = match sideloader.sign_app(input_ipa.clone(), Some(team.clone()), true).await {
@@ -350,12 +363,12 @@ async fn main() {
     // Report team slot usage (D12) from the developer portal.
     let dev_session = sideloader.get_dev_session();
     let device_count = dev_session
-        .list_devices(&team, None)
+        .list_devices(&team, device_type.clone())
         .await
         .map(|d| d.len())
         .unwrap_or(0);
     let app_id_count = dev_session
-        .list_app_ids(&team, None)
+        .list_app_ids(&team, device_type)
         .await
         .map(|d| d.app_ids.len())
         .unwrap_or(0);

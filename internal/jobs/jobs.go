@@ -43,9 +43,9 @@ const JobTypeRefresh = "refresh"
 const JobTypeSign = "sign"
 
 // refreshProfileValidity is the assumed validity of a freshly issued free-team
-// provisioning profile (7 days). The refresh agent does not report the exact
-// new expiry today, so the completion hook schedules the next refresh from
-// now + this window.
+// provisioning profile (7 days), used when a completed refresh job does not
+// report the real profile expiry (e.g. legacy agents). The refresh agent
+// normally reports the exact new expiry, which takes precedence.
 const refreshProfileValidity = 7 * 24 * time.Hour
 
 // ErrNotClaimed is returned when an agent updates a job it does not hold.
@@ -78,21 +78,21 @@ type Job struct {
 
 // CreateRequest describes a new job.
 type CreateRequest struct {
-	JobType       string          `json:"job_type"`
-	DeviceID      *uuid.UUID      `json:"device_id"`
-	ApplicationID *uuid.UUID      `json:"application_id"`
-	Parameters    json.RawMessage `json:"parameters"`
-	IdempotencyKey string         `json:"idempotency_key"`
-	RetryAt       *time.Time      `json:"retry_at"`
+	JobType        string          `json:"job_type"`
+	DeviceID       *uuid.UUID      `json:"device_id"`
+	ApplicationID  *uuid.UUID      `json:"application_id"`
+	Parameters     json.RawMessage `json:"parameters"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	RetryAt        *time.Time      `json:"retry_at"`
 }
 
 // UpdateRequest describes a status update by the claiming agent.
 type UpdateRequest struct {
-	State          string          `json:"state"`
-	Progress       *int            `json:"progress"`
-	ErrorCategory  *string         `json:"error_category"`
-	ErrorDetails   *string         `json:"error_details"`
-	Result         json.RawMessage `json:"result"`
+	State         string          `json:"state"`
+	Progress      *int            `json:"progress"`
+	ErrorCategory *string         `json:"error_category"`
+	ErrorDetails  *string         `json:"error_details"`
+	Result        json.RawMessage `json:"result"`
 }
 
 type Service struct {
@@ -223,13 +223,25 @@ func nullableJobTypes(types []string) any {
 	return types
 }
 
+// globalTypes reports whether every requested job type is claimable by any
+// agent regardless of device ownership. Currently only sign jobs are global.
+func globalTypes(types []string) bool {
+	for _, t := range types {
+		if t != JobTypeSign {
+			return false
+		}
+	}
+	return true
+}
+
 // Claim atomically claims up to limit pending jobs for the caller's devices.
 // Device rows are locked FOR UPDATE, serialising concurrent claims per device.
 // When jobTypes is non-empty, only jobs of those types are claimed; sign jobs
 // are claimable by any agent (the signing worker does not own the target
 // device), while other types remain restricted to the agent's own devices. A
 // claim without jobTypes never delivers sign jobs: they belong to the signing
-// worker, and generic agents would only fail them.
+// worker, and generic agents would only fail them. An explicit device_ids
+// list narrows the claim set in every case.
 func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid.UUID, jobTypes []string, limit int) ([]*Job, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 10
@@ -242,30 +254,48 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 
 	var devices []uuid.UUID
 	if len(jobTypes) > 0 {
+		// Candidate devices with pending jobs of the requested types.
 		rows, err := tx.Query(ctx,
-			`SELECT j.device_id
+			`SELECT DISTINCT j.device_id
 			 FROM jobs j
 			 WHERE j.job_type = ANY($1) AND j.state = $2
 			   AND (j.retry_at IS NULL OR j.retry_at <= now())
-			   AND j.device_id IS NOT NULL
-			 GROUP BY j.device_id
-			 ORDER BY j.device_id`,
+			   AND j.device_id IS NOT NULL`,
 			jobTypes, StatePending)
 		if err != nil {
 			return nil, err
 		}
-		devices, err = collectUUIDs(rows)
+		candidate, err := collectUUIDs(rows)
 		if err != nil {
 			return nil, err
 		}
-		if len(devices) > 0 {
-			rows, err := tx.Query(ctx,
-				`SELECT id FROM devices WHERE id = ANY($1) ORDER BY id FOR UPDATE`,
-				devices)
+		// Narrow candidates: non-global types may only target the caller's
+		// own devices (a job_types filter must not become a claim scoping
+		// escape hatch), and an explicit device_ids list further restricts.
+		if len(candidate) > 0 {
+			var rows pgx.Rows
+			switch {
+			case globalTypes(jobTypes) && len(deviceIDs) == 0:
+				rows, err = tx.Query(ctx,
+					`SELECT id FROM devices WHERE id = ANY($1) ORDER BY id FOR UPDATE`, candidate)
+			case globalTypes(jobTypes):
+				rows, err = tx.Query(ctx,
+					`SELECT id FROM devices WHERE id = ANY($1) AND id = ANY($2) ORDER BY id FOR UPDATE`,
+					candidate, deviceIDs)
+			case len(deviceIDs) == 0:
+				rows, err = tx.Query(ctx,
+					`SELECT id FROM devices WHERE id = ANY($1) AND agent_id = $2 ORDER BY id FOR UPDATE`,
+					candidate, agentID)
+			default:
+				rows, err = tx.Query(ctx,
+					`SELECT id FROM devices WHERE id = ANY($1) AND agent_id = $2 AND id = ANY($3) ORDER BY id FOR UPDATE`,
+					candidate, agentID, deviceIDs)
+			}
 			if err != nil {
 				return nil, err
 			}
-			if _, err := collectUUIDs(rows); err != nil {
+			devices, err = collectUUIDs(rows)
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -440,7 +470,22 @@ func (s *Service) applyRefreshOutcome(ctx context.Context, tx pgx.Tx, job *Job, 
 		return fmt.Errorf("refresh job %s: missing deployment_id in parameters", job.ID)
 	}
 	if job.State == StateCompleted {
+		// Prefer the real expiry reported by the refresh agent (the wireless
+		// installer prints the embedded provisioning profile's expiry after a
+		// successful install). Fall back to an assumed validity window when
+		// the agent does not report one.
 		newExpiry := time.Now().Add(refreshProfileValidity)
+		if len(req.Result) > 0 {
+			var result struct {
+				ProfileExpiryAt *time.Time `json:"profile_expiry_at"`
+			}
+			if err := json.Unmarshal(req.Result, &result); err != nil {
+				return fmt.Errorf("refresh job %s: invalid result JSON", job.ID)
+			}
+			if result.ProfileExpiryAt != nil {
+				newExpiry = *result.ProfileExpiryAt
+			}
+		}
 		nextDue := newExpiry.Add(-s.refreshLead)
 		if _, err := tx.Exec(ctx, `
 			UPDATE deployments SET
@@ -536,7 +581,7 @@ func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 		if j.attempt > 1 {
 			retryAfter = s.minBackoff(j.attempt)
 		}
-	_, err = tx.Exec(ctx, `
+		_, err = tx.Exec(ctx, `
 			UPDATE jobs
 			SET state = $1, claimed_by = NULL, lease_expires_at = NULL,
 			    retry_at = now() + $2::interval, updated_at = now()

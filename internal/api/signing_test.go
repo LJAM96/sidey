@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,7 +70,8 @@ func TestSignJobGating(t *testing.T) {
 		t.Fatalf("sign job on missing device: %d %v", res.StatusCode, body)
 	}
 
-	// Valid creation.
+	// Valid creation. The job carries the target device identity so the
+	// signing worker signs for the correct device.
 	res, body = doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
 		"artifact_id": artifactID.String(), "device_id": deviceID.String(),
 	})
@@ -79,6 +81,13 @@ func TestSignJobGating(t *testing.T) {
 	jobID, _ := uuid.Parse(body["id"].(string))
 	if body["job_type"] != "sign" {
 		t.Fatalf("job_type = %v", body["job_type"])
+	}
+	params, _ := body["parameters"].(map[string]any)
+	if params["udid"] != "00008120-0000000000000101" {
+		t.Fatalf("sign job does not carry the device udid: %v", body["parameters"])
+	}
+	if params["device_name"] != "test phone" || params["artifact_id"] != artifactID.String() {
+		t.Fatalf("sign job parameters: %v", body["parameters"])
 	}
 
 	// Idempotent: same artifact+device returns the same job.
@@ -210,58 +219,93 @@ func TestAgentArtifactDownloadAuthz(t *testing.T) {
 }
 
 // TestSignedArtifactUpload covers the worker->control-plane handoff: the
-// multipart upload verifies the declared sha256, records the signed
-// derivative and upserts the account and certificate.
+// multipart upload must be bound to the signing agent's own sign job for the
+// device and source artifact. The declared sha256 is verified, the signed
+// derivative recorded and the account and certificate upserted.
 func TestSignedArtifactUpload(t *testing.T) {
 	truncate(t)
 	_, apiKey := enrolAgent(t, "signing-1")
 	deviceID := reportDevice(t, apiKey, "00008120-0000000000000104")
 	sourceID, _ := newApprovedArtifact(t)
 
+	res, body := doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
+		"artifact_id": sourceID.String(), "device_id": deviceID.String(),
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create sign job: %d %v", res.StatusCode, body)
+	}
+	jobID, _ := uuid.Parse(body["id"].(string))
+
+	// The signing agent must hold the job before it may upload a derivative.
+	res, body = doJSON(t, "POST", "/api/v1/jobs/claim", apiKey, map[string]any{
+		"job_types": []string{"sign"}, "limit": 1,
+	})
+	if res.StatusCode != http.StatusOK || len(body["jobs"].([]any)) != 1 {
+		t.Fatalf("claim sign job: %d %v", res.StatusCode, body)
+	}
+	if body["jobs"].([]any)[0].(map[string]any)["id"] != jobID.String() {
+		t.Fatalf("claimed the wrong job: %v", body["jobs"])
+	}
+	res, body = doJSON(t, "POST", "/api/v1/jobs/"+jobID.String()+"/status", apiKey, map[string]any{
+		"state": "in_progress",
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("mark in_progress: %d %v", res.StatusCode, body)
+	}
+
 	signed := testIPA(t, "com.example.Sign.SIGNED")
 	sha := sha256.Sum256(signed)
 	sha256hex := hex.EncodeToString(sha[:])
 
-	var form bytes.Buffer
-	w := multipart.NewWriter(&form)
-	fw, err := w.CreateFormFile("ipa", "signed.ipa")
-	if err != nil {
-		t.Fatal(err)
+	upload := func(overrides map[string]string) (*http.Response, map[string]any) {
+		t.Helper()
+		var form bytes.Buffer
+		w := multipart.NewWriter(&form)
+		fw, err := w.CreateFormFile("ipa", "signed.ipa")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fw.Write(signed)
+		for k, v := range map[string]string{
+			"job_id":                   jobID.String(),
+			"source_artifact_id":       sourceID.String(),
+			"device_id":                deviceID.String(),
+			"account_email":            "signer@example.com",
+			"team_id":                  "TEAM123",
+			"cert_serial":              "DEADBEEF",
+			"profile_expiry_at":        "2026-08-14T15:07:45Z",
+			"signed_bundle_identifier": "com.example.Sign.SIGNED",
+			"signed_ipa_sha256":        sha256hex,
+			"device_count":             "1",
+			"app_id_count":             "2",
+		} {
+			if ov, ok := overrides[k]; ok {
+				v = ov
+			}
+			w.WriteField(k, v)
+		}
+		w.Close()
+		req, err := http.NewRequest("POST", httpServer.URL+"/api/v1/signed-artifacts", &form)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", w.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var parsed map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+			t.Fatalf("decode upload response: %v", err)
+		}
+		return resp, parsed
 	}
-	fw.Write(signed)
-	for k, v := range map[string]string{
-		"source_artifact_id":       sourceID.String(),
-		"device_id":                deviceID.String(),
-		"account_email":            "signer@example.com",
-		"team_id":                  "TEAM123",
-		"cert_serial":              "DEADBEEF",
-		"profile_expiry_at":        "2026-08-14T15:07:45Z",
-		"signed_bundle_identifier": "com.example.Sign.SIGNED",
-		"signed_ipa_sha256":        sha256hex,
-		"device_count":             "1",
-		"app_id_count":             "2",
-	} {
-		w.WriteField(k, v)
-	}
-	w.Close()
 
-	req, err := http.NewRequest("POST", httpServer.URL+"/api/v1/signed-artifacts", &form)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", w.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	var parsed map[string]any
-	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
-		t.Fatal(err)
-	}
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("signed upload: %d %v", res.StatusCode, parsed)
+	resp, parsed := upload(nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("signed upload: %d %v", resp.StatusCode, parsed)
 	}
 
 	// The account was upserted by team identifier with slot counts.
@@ -312,11 +356,123 @@ func TestSignedArtifactUpload(t *testing.T) {
 	}
 
 	// A mismatching sha256 declaration is rejected.
-	req, _ = http.NewRequest("POST", httpServer.URL+"/api/v1/signed-artifacts", nil)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	res2, _ := http.DefaultClient.Do(req)
-	if res2.StatusCode != http.StatusBadRequest {
-		t.Fatalf("malformed upload: %d", res2.StatusCode)
+	resp, parsed = upload(map[string]string{"signed_ipa_sha256": strings.Repeat("0", 64)})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("mismatching sha256 should be rejected: %d %v", resp.StatusCode, parsed)
 	}
-	res2.Body.Close()
+}
+
+// TestSignedUploadBindingEnforced covers the binding between a signed
+// derivative upload and the sign job: the upload is refused when the agent
+// does not hold the job, or when the job targets a different device or source
+// artifact.
+func TestSignedUploadBindingEnforced(t *testing.T) {
+	truncate(t)
+	_, signKey := enrolAgent(t, "signing-1")
+	_, otherKey := enrolAgent(t, "other-agent")
+	deviceID := reportDevice(t, signKey, "00008120-0000000000000105")
+	sourceID, _ := newApprovedArtifact(t)
+
+	res, body := doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
+		"artifact_id": sourceID.String(), "device_id": deviceID.String(),
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create sign job: %d %v", res.StatusCode, body)
+	}
+	jobID, _ := uuid.Parse(body["id"].(string))
+	res, body = doJSON(t, "POST", "/api/v1/jobs/claim", signKey, map[string]any{
+		"job_types": []string{"sign"}, "limit": 1,
+	})
+	if res.StatusCode != http.StatusOK || len(body["jobs"].([]any)) != 1 {
+		t.Fatalf("claim sign job: %d %v", res.StatusCode, body)
+	}
+	res, body = doJSON(t, "POST", "/api/v1/jobs/"+jobID.String()+"/status", signKey, map[string]any{
+		"state": "in_progress",
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("mark in_progress: %d %v", res.StatusCode, body)
+	}
+
+	build := func(token string, fields map[string]string) (*http.Response, map[string]any) {
+		t.Helper()
+		signed := testIPA(t, "com.example.Sign.SIGNED")
+		var form bytes.Buffer
+		w := multipart.NewWriter(&form)
+		fw, err := w.CreateFormFile("ipa", "signed.ipa")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fw.Write(signed)
+		for k, v := range fields {
+			w.WriteField(k, v)
+		}
+		w.Close()
+		req, err := http.NewRequest("POST", httpServer.URL+"/api/v1/signed-artifacts", &form)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", w.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var parsed map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp, parsed
+	}
+
+	valid := map[string]string{
+		"job_id": jobID.String(), "source_artifact_id": sourceID.String(),
+		"device_id": deviceID.String(),
+	}
+
+	// An agent that does not hold the job is refused.
+	resp, _ := build(otherKey, valid)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign agent upload: %d", resp.StatusCode)
+	}
+
+	// No job id is refused outright.
+	resp, _ = build(signKey, map[string]string{
+		"source_artifact_id": sourceID.String(), "device_id": deviceID.String(),
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing job_id: %d", resp.StatusCode)
+	}
+
+	// A job targeting a different device is refused.
+	otherDevice := reportDevice(t, signKey, "00008120-0000000000000106")
+	resp, _ = build(signKey, map[string]string{
+		"job_id": jobID.String(), "source_artifact_id": sourceID.String(),
+		"device_id": otherDevice.String(),
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("wrong device upload: %d", resp.StatusCode)
+	}
+
+	// A job referencing a different source artifact is refused.
+	otherSource, _ := newApprovedArtifact(t)
+	resp, _ = build(signKey, map[string]string{
+		"job_id": jobID.String(), "source_artifact_id": otherSource.String(),
+		"device_id": deviceID.String(),
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("wrong source artifact upload: %d", resp.StatusCode)
+	}
+
+	// A completed job can no longer be uploaded against.
+	res, _ = doJSON(t, "POST", "/api/v1/jobs/"+jobID.String()+"/status", signKey, map[string]any{
+		"state": "completed",
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("complete job: %d", res.StatusCode)
+	}
+	resp, _ = build(signKey, valid)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("upload against completed job: %d", resp.StatusCode)
+	}
 }

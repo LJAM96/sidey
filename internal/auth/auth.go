@@ -4,8 +4,10 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 
 	"golang.org/x/crypto/bcrypt"
@@ -20,6 +22,14 @@ func GenerateSecret() (string, error) {
 		return "", fmt.Errorf("generate secret: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// KeyID returns a fixed length identifier for a secret, derived from its
+// sha256. It is safe to store alongside the bcrypt hash: knowing the id does
+// not reveal the secret, and it enables indexed lookup by the raw key.
+func KeyID(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])
 }
 
 // HashSecret hashes a secret for storage.

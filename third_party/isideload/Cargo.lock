@@ -5187,6 +5187,7 @@ dependencies = [
  "isideload",
  "plist",
  "plist-macro",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

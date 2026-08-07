@@ -10,8 +10,8 @@ import (
 )
 
 type createEnrolmentTokenRequest struct {
-	Label             string `json:"label"`
-	ExpiresInSeconds  *int   `json:"expires_in_seconds"`
+	Label            string `json:"label"`
+	ExpiresInSeconds *int   `json:"expires_in_seconds"`
 }
 
 // handleCreateEnrolmentToken issues a one time enrolment token. The plaintext
@@ -54,12 +54,12 @@ func (s *Server) handleCreateEnrolmentToken(w http.ResponseWriter, r *http.Reque
 }
 
 type enrolAgentRequest struct {
-	Name             string          `json:"name"`
-	Architecture     string          `json:"architecture"`
-	OperatingSystem  string          `json:"operating_system"`
-	SoftwareVersion  string          `json:"software_version"`
-	TailnetIdentity  string          `json:"tailnet_identity"`
-	Capabilities     map[string]any  `json:"capabilities"`
+	Name            string         `json:"name"`
+	Architecture    string         `json:"architecture"`
+	OperatingSystem string         `json:"operating_system"`
+	SoftwareVersion string         `json:"software_version"`
+	TailnetIdentity string         `json:"tailnet_identity"`
+	Capabilities    map[string]any `json:"capabilities"`
 }
 
 // handleEnrolAgent consumes a one time token and creates an agent with a
@@ -135,11 +135,11 @@ func (s *Server) handleEnrolAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	err = tx.QueryRow(r.Context(), `
 		INSERT INTO agents (name, architecture, operating_system, software_version,
-			tailnet_identity, connection_state, last_heartbeat_at, capabilities, api_key_hash)
-		VALUES ($1, $2, $3, $4, $5, 'online', now(), $6, $7)
+			tailnet_identity, connection_state, last_heartbeat_at, capabilities, api_key_hash, api_key_id)
+		VALUES ($1, $2, $3, $4, $5, 'online', now(), $6, $7, $8)
 		RETURNING id`,
 		req.Name, req.Architecture, req.OperatingSystem, req.SoftwareVersion,
-		req.TailnetIdentity, capabilities, apiKeyHash).Scan(&agentID)
+		req.TailnetIdentity, capabilities, apiKeyHash, auth.KeyID(apiKey)).Scan(&agentID)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "agent creation failed")
 		return
@@ -187,12 +187,12 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		          last_heartbeat_at`,
 		capabilities, agentID)
 	var (
-		id            uuid.UUID
-		name          string
-		software      *string
-		tailnet       *string
-		state         string
-		heartbeatAt   time.Time
+		id          uuid.UUID
+		name        string
+		software    *string
+		tailnet     *string
+		state       string
+		heartbeatAt time.Time
 	)
 	if err := row.Scan(&id, &name, &software, &tailnet, &state, &heartbeatAt); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "heartbeat failed")
@@ -209,13 +209,13 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 type reportedDevice struct {
-	Udid                  string `json:"udid"`
-	Platform              string `json:"platform"`
-	DeviceName            string `json:"device_name"`
-	Model                 string `json:"model"`
-	OsVersion             string `json:"os_version"`
-	PairingStatus         string `json:"pairing_status"`
-	DeveloperModeEnabled  *bool  `json:"developer_mode_enabled"`
+	Udid                 string `json:"udid"`
+	Platform             string `json:"platform"`
+	DeviceName           string `json:"device_name"`
+	Model                string `json:"model"`
+	OsVersion            string `json:"os_version"`
+	PairingStatus        string `json:"pairing_status"`
+	DeveloperModeEnabled *bool  `json:"developer_mode_enabled"`
 }
 
 // handleReportDevices upserts the devices currently visible to the agent.
@@ -230,7 +230,7 @@ func (s *Server) handleReportDevices(w http.ResponseWriter, r *http.Request) {
 	agentID := agentID(r.Context())
 	upserted := 0
 	type reported struct {
-		Udid string `json:"udid"`
+		Udid string    `json:"udid"`
 		ID   uuid.UUID `json:"id"`
 	}
 	ids := make([]reported, 0, len(req.Devices))

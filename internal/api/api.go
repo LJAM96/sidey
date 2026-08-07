@@ -10,14 +10,15 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/google/uuid"
-	"sidey/internal/artifacts"
-	"sidey/internal/auth"
-	"sidey/internal/audit"
-	"sidey/internal/jobs"
 	webassets "sidey"
+	"sidey/internal/artifacts"
+	"sidey/internal/audit"
+	"sidey/internal/auth"
+	"sidey/internal/jobs"
 )
 
 type Server struct {
@@ -57,6 +58,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/signed-artifacts", s.agent(s.handleUploadSignedArtifact))
 	mux.Handle("GET /api/v1/agents/artifacts/{id}/download", s.agent(s.handleAgentDownloadArtifact))
 
+	mux.Handle("POST /api/v1/certificates/{id}/revoke", s.admin(s.handleRevokeCertificate))
+
 	mux.Handle("POST /api/v1/agents/enrol", s.enrolmentToken(s.handleEnrolAgent))
 	mux.Handle("POST /api/v1/agents/me/heartbeat", s.agent(s.handleHeartbeat))
 	mux.Handle("POST /api/v1/agents/me/devices", s.agent(s.handleReportDevices))
@@ -72,6 +75,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/dashboard/artifacts", s.admin(s.handleListArtifacts))
 	mux.Handle("GET /api/v1/dashboard/signed-artifacts", s.admin(s.handleListSignedArtifacts))
 	mux.Handle("GET /api/v1/dashboard/accounts", s.admin(s.handleListAccounts))
+	mux.Handle("GET /api/v1/dashboard/certificates", s.admin(s.handleListCertificates))
 	mux.Handle("GET /api/v1/dashboard/deployments", s.admin(s.handleListDeployments))
 	mux.Handle("GET /api/v1/dashboard/refresh", s.admin(s.handleListRefresh))
 
@@ -122,22 +126,38 @@ func (s *Server) agent(next http.HandlerFunc) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing bearer token"})
 			return
 		}
+		var id uuid.UUID
+		// Fast path: agents enrolled after the key_id column exists resolve
+		// in a single indexed query.
+		err := s.pool.QueryRow(r.Context(),
+			`SELECT id FROM agents WHERE api_key_id = $1`, auth.KeyID(key)).Scan(&id)
+		if err == nil {
+			next(w, r.WithContext(context.WithValue(r.Context(), agentKey{}, id)))
+			return
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			s.writeError(w, http.StatusInternalServerError, "agent lookup failed")
+			return
+		}
+		// Legacy path: agents predating key ids are verified against their
+		// stored bcrypt hash. Only rows without a key id are scanned.
 		rows, err := s.pool.Query(r.Context(),
-			`SELECT id, api_key_hash FROM agents WHERE api_key_hash IS NOT NULL`)
+			`SELECT id, api_key_hash FROM agents
+			 WHERE api_key_id IS NULL AND api_key_hash IS NOT NULL`)
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "agent lookup failed")
 			return
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var id uuid.UUID
+			var aID uuid.UUID
 			var hash string
-			if err := rows.Scan(&id, &hash); err != nil {
+			if err := rows.Scan(&aID, &hash); err != nil {
 				s.writeError(w, http.StatusInternalServerError, "agent lookup failed")
 				return
 			}
 			if auth.VerifySecret(key, hash) {
-				next(w, r.WithContext(context.WithValue(r.Context(), agentKey{}, id)))
+				next(w, r.WithContext(context.WithValue(r.Context(), agentKey{}, aID)))
 				return
 			}
 		}

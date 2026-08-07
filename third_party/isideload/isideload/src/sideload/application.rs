@@ -4,6 +4,7 @@
 use crate::SideloadError;
 use crate::dev::app_ids::{AppId, AppIdsApi};
 use crate::dev::developer_session::DeveloperSession;
+use crate::dev::device_type::DeveloperDeviceType;
 use crate::dev::teams::DeveloperTeam;
 use crate::sideload::bundle::Bundle;
 use crate::sideload::cert_identity::CertificateIdentity;
@@ -168,13 +169,15 @@ impl Application {
         //mode: &ExtensionsBehavior,
         dev_session: &mut DeveloperSession,
         team: &DeveloperTeam,
+        device_type: impl Into<Option<DeveloperDeviceType>> + Send,
     ) -> Result<Vec<AppId>, Report> {
         let extension_refs: Vec<_> = self.bundle.app_extensions().iter().collect();
         let mut bundles_with_app_id = vec![&self.bundle];
         bundles_with_app_id.extend(extension_refs);
 
+        let device_type: Option<DeveloperDeviceType> = device_type.into();
         let list_app_ids_response = dev_session
-            .list_app_ids(team, None)
+            .list_app_ids(team, device_type.clone())
             .await
             .context("Failed to list app IDs for the developer team")?;
         let app_ids_to_register = bundles_with_app_id
@@ -216,9 +219,9 @@ impl Application {
         for bundle in app_ids_to_register {
             let id = bundle.bundle_identifier().unwrap_or("");
             let name = bundle.bundle_name().unwrap_or("");
-            dev_session.add_app_id(team, name, id, None).await?;
+            dev_session.add_app_id(team, name, id, device_type.clone()).await?;
         }
-        let list_app_id_response = dev_session.list_app_ids(team, None).await?;
+        let list_app_id_response = dev_session.list_app_ids(team, device_type).await?;
         let app_ids: Vec<_> = list_app_id_response
             .app_ids
             .into_iter()

@@ -169,11 +169,11 @@ func enrolAgent(t *testing.T, name string) (uuid.UUID, string) {
 	t.Helper()
 	token := newEnrolmentToken(t)
 	res, body := doJSON(t, "POST", "/api/v1/agents/enrol", token, map[string]any{
-		"name":            name,
-		"architecture":    "aarch64",
+		"name":             name,
+		"architecture":     "aarch64",
 		"operating_system": "linux",
 		"software_version": "0.1.0",
-		"capabilities":    map[string]any{"usb": true},
+		"capabilities":     map[string]any{"usb": true},
 	})
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("enrol: %d %v", res.StatusCode, body)
@@ -214,7 +214,7 @@ func createJob(t *testing.T, deviceID uuid.UUID, key, jobType string) uuid.UUID 
 	t.Helper()
 	res, body := doJSON(t, "POST", "/api/v1/jobs", adminKey, map[string]any{
 		"job_type": jobType, "device_id": deviceID.String(),
-		"parameters": map[string]any{"ipa_sha256": "abc"},
+		"parameters":      map[string]any{"ipa_sha256": "abc"},
 		"idempotency_key": key,
 	})
 	if res.StatusCode != http.StatusCreated {
@@ -355,6 +355,45 @@ func TestForeignAgentCannotUpdate(t *testing.T) {
 	})
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("foreign agent update should conflict, got %d %v", res.StatusCode, body)
+	}
+}
+
+// TestJobTypesClaimScopedToOwnDevices covers claim scoping: a job_types
+// filter must not become a scoping escape hatch. An agent can only claim
+// non-global (refresh) jobs for its own devices, while a sign job remains
+// claimable by any agent through job_types=["sign"].
+func TestJobTypesClaimScopedToOwnDevices(t *testing.T) {
+	truncate(t)
+	_, apiKeyA := enrolAgent(t, "edge-a")
+	_, apiKeyB := enrolAgent(t, "edge-b")
+	deviceA := reportDevice(t, apiKeyA, "00008120-0000000000000701")
+
+	// Refresh job for agent A's device.
+	jobID := createJob(t, deviceA, "scoped-refresh-key", "refresh")
+
+	// Agent B must not receive it, with or without an explicit device list.
+	res, body := doJSON(t, "POST", "/api/v1/jobs/claim", apiKeyB, map[string]any{
+		"job_types": []string{"refresh"}, "limit": 1,
+	})
+	if res.StatusCode != http.StatusOK || len(body["jobs"].([]any)) != 0 {
+		t.Fatalf("agent B claimed refresh for another agent's device: %d %v", res.StatusCode, body)
+	}
+	res, body = doJSON(t, "POST", "/api/v1/jobs/claim", apiKeyB, map[string]any{
+		"job_types": []string{"refresh"}, "device_ids": []string{deviceA.String()}, "limit": 1,
+	})
+	if res.StatusCode != http.StatusOK || len(body["jobs"].([]any)) != 0 {
+		t.Fatalf("agent B claimed refresh by explicit device id: %d %v", res.StatusCode, body)
+	}
+
+	// Agent A still receives its own refresh job.
+	res, body = doJSON(t, "POST", "/api/v1/jobs/claim", apiKeyA, map[string]any{
+		"job_types": []string{"refresh"}, "limit": 1,
+	})
+	if res.StatusCode != http.StatusOK || len(body["jobs"].([]any)) != 1 {
+		t.Fatalf("agent A claim its own refresh: %d %v", res.StatusCode, body)
+	}
+	if body["jobs"].([]any)[0].(map[string]any)["id"] != jobID.String() {
+		t.Fatalf("agent A claimed the wrong job: %v", body["jobs"])
 	}
 }
 

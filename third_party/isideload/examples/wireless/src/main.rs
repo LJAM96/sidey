@@ -1,7 +1,31 @@
+//! Wireless install proof over an RSD tunnel (Phase B / Phase I refresh).
+//!
+//! Signs an already-extracted app for the target device with the account's
+//! certificate identity, then installs the signed bundle over a RemotePairing
+//! RSD tunnel. Unlike `install_app_rsd`, this example drives `sign_app`
+//! directly and prints the *real* provisioning expiry from the signed bundle
+//! so the refresh agent can schedule the next refresh from actual data.
+//!
+//! Usage:
+//!   wireless <apple_id> <apple_password> <app_path>
+//!
+//! Env:
+//!   RSD_ADDR   RSD tunnel address (default fd14:1218:6927::1)
+//!   RSD_PORT   RSD tunnel port (default 51569)
+//!   DEVICE_UDID    target device UDID
+//!   DEVICE_NAME    target device display name
+//!   DEVICE_TYPE    ios|tvos|watchos (default ios)
+//!
+//! Success output (single JSON line on stdout):
+//!   {"status":"ok","installed":true,"profile_expiry_at":"...","cert_serial":"...",
+//!    "team_id":"...","signed_bundle_identifier":"..."}
 use isideload::{
     anisette::remote_v3::RemoteV3AnisetteProvider,
     auth::apple_account::{AppleAccount, TwoFactorCallbackParams, TwoFactorCallbackResponse},
+    dev::device_type::DeveloperDeviceType,
     dev::developer_session::DeveloperSession,
+    dev::devices::DevicesApi,
+    dev::teams::TeamsApi,
     sideload::{SideloaderBuilder, TeamSelection, builder::MaxCertsBehavior},
     util::fs_storage::FsStorage,
 };
@@ -19,9 +43,7 @@ fn storage_dir() -> PathBuf {
 #[tokio::main]
 async fn main() {
     isideload::init().expect("Failed to initialize error reporting");
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .finish();
+    let subscriber = FmtSubscriber::builder().with_max_level(Level::INFO).finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let args: Vec<String> = env::args().collect();
@@ -33,7 +55,7 @@ async fn main() {
     let app_path = PathBuf::from(args.get(3).expect("Please provide the path to the app to install"));
 
     let rsd_host: std::net::IpAddr = env::var("RSD_ADDR")
-        .unwrap_or_else(|_| "fd14:6ec1:8b43::1".to_string())
+        .unwrap_or_else(|_| "fd14:1218:8b43::1".to_string())
         .parse()
         .expect("RSD_ADDR must be an IP");
     let rsd_port: u16 = env::var("RSD_PORT")
@@ -41,8 +63,15 @@ async fn main() {
         .parse()
         .expect("RSD_PORT must be a port");
     let device_name = env::var("DEVICE_NAME").unwrap_or_else(|_| "ACU Covert Camera".to_string());
-    let device_udid = env::var("DEVICE_UDID")
-        .unwrap_or_else(|_| "00008120-001E11211184C01E".to_string());
+    let device_udid = env::var("DEVICE_UDID").unwrap_or_else(|_| {
+        panic!("DEVICE_UDID is required: refusing to sign without a target device")
+    });
+    let device_type: Option<DeveloperDeviceType> = match env::var("DEVICE_TYPE").as_deref() {
+        Ok("tvos") => Some(DeveloperDeviceType::Tvos),
+        Ok("watchos") => Some(DeveloperDeviceType::Watchos),
+        Ok("ios") | Ok("") | Err(_) => None,
+        Ok(other) => panic!("unknown DEVICE_TYPE {other:?} (ios|tvos|watchos)"),
+    };
 
     let get_2fa_code = |params: TwoFactorCallbackParams| {
         if params.unknown {
@@ -101,7 +130,7 @@ async fn main() {
         .login(apple_password, Box::new(get_2fa_code))
         .await;
 
-    let mut account = account.unwrap();
+    let mut account = account.expect("Apple login failed");
     println!("LOGIN OK - account: {}", apple_id);
 
     let dev_session = DeveloperSession::from_account(&mut account)
@@ -121,38 +150,36 @@ async fn main() {
     );
     let mut provider = rsd_host;
 
+    println!("Registering device {} with the team...", device_udid);
+    let mut dev_session = dev_session;
+    let teams = dev_session
+        .list_teams()
+        .await
+        .expect("failed to list developer teams");
+    let team = teams
+        .first()
+        .expect("no developer teams available")
+        .clone();
+    dev_session
+        .ensure_device_registered(&team, &device_name, &device_udid, device_type.clone())
+        .await
+        .expect("failed to register device on the team");
+
     let team_selection_prompt = |teams: &Vec<isideload::dev::teams::DeveloperTeam>| {
         teams.first().map(|t| t.team_id.clone())
     };
 
     let cert_selection_prompt = |certs: &Vec<isideload::dev::certificates::DevelopmentCertificate>| {
-        println!("Maximum number of certificates reached. Please select certificates to revoke:");
+        eprintln!("Maximum number of certificates reached; refusing to revoke automatically.");
         for (index, cert) in certs.iter().enumerate() {
-            println!(
+            eprintln!(
                 "({}) {}: {}",
                 index + 1,
                 cert.name.as_deref().unwrap_or("<Unnamed>"),
                 cert.machine_name.as_deref().unwrap_or("<No Machine Name>"),
             );
         }
-        println!("Enter the numbers of the certificates to revoke, separated by commas:");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap();
-        let selections: Vec<usize> = input
-            .trim()
-            .split(',')
-            .filter_map(|s| s.trim().parse::<usize>().ok())
-            .filter(|&n| n > 0 && n <= certs.len())
-            .collect();
-        if selections.is_empty() {
-            return None;
-        }
-        Some(
-            selections
-                .into_iter()
-                .map(|n| certs[n - 1].serial_number.clone().unwrap_or_default())
-                .collect::<Vec<_>>(),
-        )
+        None
     };
 
     let mut sideloader = SideloaderBuilder::new(dev_session, apple_id.to_string())
@@ -160,20 +187,34 @@ async fn main() {
         .max_certs_behavior(MaxCertsBehavior::Prompt(Box::new(cert_selection_prompt)))
         .storage(Box::new(FsStorage::new(storage_dir())))
         .machine_name("isideload-minimal".to_string())
+        .device_type(device_type)
         .build();
 
-    let result = sideloader
-        .install_app_rsd(
-            &mut provider,
-            &mut handshake,
-            &device_name,
-            &device_udid,
-            app_path,
-            true,
-        )
-        .await;
-    match result {
-        Ok(_) => println!("App installed successfully over RSD tunnel"),
-        Err(e) => panic!("{}", e),
-    }
+    let signed_app = sideloader
+        .sign_app(app_path.clone(), Some(team.clone()), true)
+        .await
+        .unwrap_or_else(|e| panic!("signing failed: {e:?}"));
+
+    println!("App signed - installing over RSD tunnel...");
+    isideload::sideload::install::install_app_rsd(
+        &mut provider,
+        &mut handshake,
+        &signed_app.bundle_dir,
+        |progress| println!("Installing: {}%", progress),
+    )
+    .await
+    .expect("Failed to install app on device over RSD");
+
+    println!("TERMINAL INSTALL Complete");
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": "ok",
+            "installed": true,
+            "profile_expiry_at": signed_app.profile_expiry.to_xml_format(),
+            "cert_serial": signed_app.cert_serial,
+            "team_id": signed_app.team_id,
+            "signed_bundle_identifier": signed_app.signed_bundle_identifier,
+        })
+    );
 }

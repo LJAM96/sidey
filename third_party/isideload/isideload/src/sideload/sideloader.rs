@@ -3,6 +3,7 @@ use crate::{
         app_groups::AppGroupsApi,
         app_ids::AppIdsApi,
         developer_session::DeveloperSession,
+        device_type::DeveloperDeviceType,
         devices::DevicesApi,
         teams::{DeveloperTeam, TeamsApi},
     },
@@ -47,6 +48,7 @@ pub struct Sideloader {
     max_certs_behavior: MaxCertsBehavior,
     //extensions_behavior: ExtensionsBehavior,
     delete_app_after_install: bool,
+    device_type: Option<DeveloperDeviceType>,
     team: Option<DeveloperTeam>,
 }
 
@@ -63,6 +65,7 @@ impl Sideloader {
         storage: Box<dyn SideloadingStorage>,
         //extensions_behavior: ExtensionsBehavior,
         delete_app_after_install: bool,
+        device_type: Option<DeveloperDeviceType>,
     ) -> Self {
         Sideloader {
             team_selection,
@@ -73,6 +76,7 @@ impl Sideloader {
             max_certs_behavior,
             //extensions_behavior,
             delete_app_after_install,
+            device_type,
             team: None,
         }
     }
@@ -113,6 +117,7 @@ impl Sideloader {
             .register_app_ids(
                 /*&self.extensions_behavior, */ &mut self.dev_session,
                 &team,
+                self.device_type.clone(),
             )
             .await?;
         let main_app_id = match app_ids
@@ -140,16 +145,16 @@ impl Sideloader {
 
         let app_group = self
             .dev_session
-            .ensure_app_group(&team, &main_app_name, &group_identifier, None)
+            .ensure_app_group(&team, &main_app_name, &group_identifier, self.device_type.clone())
             .await?;
 
         for app_id in app_ids.iter_mut() {
             app_id
-                .ensure_group_feature(&mut self.dev_session, &team)
+                .ensure_group_feature(&mut self.dev_session, &team, self.device_type.clone())
                 .await?;
 
             self.dev_session
-                .assign_app_group(&team, &app_group, app_id, None)
+                .assign_app_group(&team, &app_group, app_id, self.device_type.clone())
                 .await?;
 
             if increased_memory_limit {
@@ -167,7 +172,7 @@ impl Sideloader {
 
         let provisioning_profile = self
             .dev_session
-            .download_team_provisioning_profile(&team, &main_app_id, None)
+            .download_team_provisioning_profile(&team, &main_app_id, self.device_type.clone())
             .await?;
 
         info!("Acquired provisioning profile");
@@ -220,7 +225,7 @@ impl Sideloader {
 
         let team = self.get_team().await?;
         self.dev_session
-            .ensure_device_registered(&team, &device_info.name, &device_info.udid, None)
+            .ensure_device_registered(&team, &device_info.name, &device_info.udid, self.device_type.clone())
             .await?;
 
         let signed_app = self
@@ -258,7 +263,7 @@ impl Sideloader {
     ) -> Result<Option<SpecialApp>, Report> {
         let team = self.get_team().await?;
         self.dev_session
-            .ensure_device_registered(&team, device_name, device_udid, None)
+            .ensure_device_registered(&team, device_name, device_udid, self.device_type.clone())
             .await?;
 
         let signed_app = self

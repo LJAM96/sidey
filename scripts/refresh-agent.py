@@ -22,8 +22,10 @@ Env:
 """
 import json
 import os
+import platform
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -38,6 +40,7 @@ ENROLMENT_TOKEN = os.environ.get("SIDEY_ENROLMENT_TOKEN", "")
 STATE_DIR = Path(os.environ.get("SIDEY_AGENT_STATE_DIR", "/var/lib/sidey/refresh-agent"))
 DEVICE_UDID = os.environ.get("SIDEY_DEVICE_UDID", "00008120-001E11211184C01E")
 DEVICE_NAME = os.environ.get("SIDEY_DEVICE_NAME", "ACU Covert Camera")
+TAILNET_IDENTITY = os.environ.get("SIDEY_TAILNET_IDENTITY", socket.gethostname())
 REPO_DIR = Path(__file__).resolve().parent.parent
 WRAPPER = os.environ.get("SIDEY_REFRESH_WRAPPER", str(REPO_DIR / "scripts/wireless-install.sh"))
 POLL_SECONDS = int(os.environ.get("SIDEY_POLL_SECONDS", "30"))
@@ -80,10 +83,10 @@ def ensure_api_key():
     log("enrolling agent...")
     body = {
         "name": "refresh-agent",
-        "architecture": "arm64",
+        "architecture": platform.machine(),
         "operating_system": "linux",
         "software_version": "1.0",
-        "tailnet_identity": "100.100.12.70",
+        "tailnet_identity": TAILNET_IDENTITY,
         "capabilities": {"refresh": True},
     }
     status, resp = request("POST", "/api/v1/agents/enrol", body, bearer=ENROLMENT_TOKEN)
@@ -164,6 +167,23 @@ def extract_progress(line):
     return int(m.group(1)) if m else None
 
 
+def extract_expiry(captured):
+    """Find the terminal JSON line emitted by the wireless install binary and
+    return the real provisioning expiry, so the control plane can schedule the
+    next refresh from the actual profile instead of an assumed 7-day window."""
+    for line in reversed(captured):
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            doc = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if doc.get("status") == "ok" and doc.get("profile_expiry_at"):
+            return doc["profile_expiry_at"]
+    return None
+
+
 def run_job(key, job):
     job_id = job["id"]
     job_type = job.get("job_type")
@@ -224,9 +244,11 @@ def run_job(key, job):
     if timed_out["value"]:
         tail = (tail + f"\n[timed out after {JOB_TIMEOUT_SECONDS}s]").strip()[-2000:]
     if rc == 0:
-        log(f"job {job_id}: completed in {duration}s")
-        post_status(key, job_id, "completed", progress=100,
-                    result={"verified": True, "duration_seconds": duration})
+        expiry = extract_expiry(captured)
+        log(f"job {job_id}: completed in {duration}s"
+            + (f"; profile expiry {expiry}" if expiry else "; no expiry reported"))
+        result = {"verified": True, "duration_seconds": duration, "profile_expiry_at": expiry}
+        post_status(key, job_id, "completed", progress=100, result=result)
     else:
         log(f"job {job_id}: FAILED (rc={rc})")
         post_status(key, job_id, "failed",

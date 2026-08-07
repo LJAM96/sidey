@@ -16,6 +16,7 @@ import (
 	"sidey/internal/artifacts"
 	"sidey/internal/audit"
 	"sidey/internal/jobs"
+	"sidey/internal/retention"
 	"sidey/internal/scheduler"
 	"sidey/internal/storage"
 )
@@ -103,6 +104,35 @@ func main() {
 				if reaped > 0 {
 					logger.Info("reaped expired job leases", "count", reaped)
 				}
+			}
+		}
+	}()
+
+	// Signed-derivative retention: original IPAs are kept forever, but a
+	// signed derivative is only useful while its embedded profile is valid.
+	// Rows whose profile expired beyond the retention window are pruned once
+	// a day, together with the files nothing else references.
+	retentionDays := envInt("SIGNED_ARTIFACT_RETENTION_DAYS", 30)
+	pruneInterval := time.Duration(envInt("PRUNE_INTERVAL_SECONDS", 86400)) * time.Second
+	go func() {
+		prune := func() {
+			pruned, err := retention.PruneSignedArtifacts(ctx, pool, auditClient, artifactStore,
+				time.Duration(retentionDays)*24*time.Hour)
+			if err != nil {
+				logger.Warn("signed-artifact prune failed", "error", err)
+				return
+			}
+			if pruned > 0 {
+				logger.Info("pruned expired signed artifacts", "rows", pruned, "retention_days", retentionDays)
+			}
+		}
+		prune() // one pass at startup
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(pruneInterval):
+				prune()
 			}
 		}
 	}()

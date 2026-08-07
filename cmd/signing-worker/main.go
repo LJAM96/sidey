@@ -27,21 +27,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	claimPollSeconds     = 30
-	heartbeatSeconds     = 60
-	jobTimeout           = 900 * time.Second
-	maxErrorDetails      = 2000
-	defaultMachineName   = "isideload-minimal"
-	defaultStateRuntime  = "/run/sidey/signing-state"
-	defaultStateVolume   = "/var/lib/sidey/signing-worker"
-	defaultControlPlane  = "http://127.0.0.1:8080"
-	defaultAnisetteURL   = "http://127.0.0.1:6970"
+	claimPollSeconds    = 30
+	heartbeatSeconds    = 60
+	jobTimeout          = 900 * time.Second
+	maxErrorDetails     = 2000
+	defaultMachineName  = "isideload-minimal"
+	defaultStateRuntime = "/run/sidey/signing-state"
+	defaultStateVolume  = "/var/lib/sidey/signing-worker"
+	defaultControlPlane = "http://127.0.0.1:8080"
+	defaultAnisetteURL  = "http://127.0.0.1:6970"
 )
 
 type config struct {
@@ -168,12 +169,12 @@ func ensureAgent(cfg config, name string) (key, id string, err error) {
 		return "", "", errors.New("no agent key and no SIDEY_ENROLMENT_TOKEN")
 	}
 	body := map[string]any{
-		"name":              name,
-		"operating_system":  "linux",
-		"architecture":      "aarch64",
-		"software_version":  "phase-f",
-		"tailnet_identity":  "signing-worker",
-		"capabilities":      map[string]any{"signing": true},
+		"name":             name,
+		"operating_system": "linux",
+		"architecture":     runtime.GOARCH,
+		"software_version": "phase-f",
+		"tailnet_identity": "signing-worker",
+		"capabilities":     map[string]any{"signing": true},
 	}
 	buf, _ := json.Marshal(body)
 	req, err := http.NewRequest("POST", cfg.controlPlane+"/api/v1/agents/enrol", bytes.NewReader(buf))
@@ -226,8 +227,11 @@ func heartbeat(cfg config, agentKey string) {
 // Job loop
 
 type signParams struct {
-	ArtifactID string `json:"artifact_id"`
+	ArtifactID  string `json:"artifact_id"`
 	MachineName string `json:"machine_name"`
+	DeviceUdid  string `json:"udid"`
+	DeviceName  string `json:"device_name"`
+	DeviceType  string `json:"device_type"`
 }
 
 func claimAndRun(cfg config, agentKey string) {
@@ -302,6 +306,11 @@ func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json
 			"sign job parameters missing artifact_id", nil)
 		return
 	}
+	if params.DeviceUdid == "" {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
+			"sign job parameters missing udid (no target device)", nil)
+		return
+	}
 	machineName := params.MachineName
 	if machineName == "" {
 		machineName = defaultMachineName
@@ -358,7 +367,7 @@ func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json
 
 	// 3. Sign with signonly.
 	signedIPA := filepath.Join(workDir, "signed.ipa")
-	signResult, signErr := runSignonly(cfg, workDir, sourceIPA, signedIPA, machineName)
+	signResult, signErr := runSignonly(cfg, workDir, sourceIPA, signedIPA, machineName, params.DeviceUdid, params.DeviceName, params.DeviceType)
 	if signErr != nil {
 		category := "other"
 		details := signErr.Error()
@@ -391,7 +400,7 @@ func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json
 		wg.Wait()
 		return
 	}
-	signedID, err := uploadSignedIPA(cfg, agentKey, params, *deviceID, signResult, signedIPA)
+	signedID, err := uploadSignedIPA(cfg, agentKey, jobID, params, *deviceID, signResult, signedIPA)
 	if err != nil {
 		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other", "signed ipa upload failed: "+err.Error(), nil)
 		encryptState(cfg.stateRuntime, cfg.agentStateDir)
@@ -406,16 +415,16 @@ func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json
 	}
 
 	result := map[string]any{
-		"signed_artifact_id":        signedID,
-		"signed_ipa_sha256":         signResult.SignedIPASha256,
-		"profile_expiry_at":         signResult.ProfileExpiryAt,
-		"cert_serial":               signResult.CertSerial,
-		"team_id":                   signResult.TeamID,
-		"bundle_identifier":         signResult.BundleIdentifier,
-		"signed_bundle_identifier":  signResult.SignedBundleIdentifier,
-		"version":                   signResult.Version,
-		"device_count":              signResult.DeviceCount,
-		"app_id_count":              signResult.AppIDCount,
+		"signed_artifact_id":       signedID,
+		"signed_ipa_sha256":        signResult.SignedIPASha256,
+		"profile_expiry_at":        signResult.ProfileExpiryAt,
+		"cert_serial":              signResult.CertSerial,
+		"team_id":                  signResult.TeamID,
+		"bundle_identifier":        signResult.BundleIdentifier,
+		"signed_bundle_identifier": signResult.SignedBundleIdentifier,
+		"version":                  signResult.Version,
+		"device_count":             signResult.DeviceCount,
+		"app_id_count":             signResult.AppIDCount,
 	}
 	postJobStatus(cfg, agentKey, jobID, "completed", nil, "", "", result)
 	close(stopHeartbeat)
@@ -452,29 +461,35 @@ func downloadArtifact(cfg config, agentKey, artifactID, dest string) error {
 // signonly execution
 
 type signonlyResult struct {
-	Status                string `json:"status"`
-	Category              string `json:"category"`
-	Error                 string `json:"error"`
-	SignedIPASha256       string `json:"signed_ipa_sha256"`
-	BundleIdentifier      string `json:"bundle_identifier"`
+	Status                 string `json:"status"`
+	Category               string `json:"category"`
+	Error                  string `json:"error"`
+	SignedIPASha256        string `json:"signed_ipa_sha256"`
+	BundleIdentifier       string `json:"bundle_identifier"`
 	SignedBundleIdentifier string `json:"signed_bundle_identifier"`
-	Version               string `json:"version"`
-	ProfileExpiryAt       string `json:"profile_expiry_at"`
-	CertSerial            string `json:"cert_serial"`
-	TeamID                string `json:"team_id"`
-	DeviceCount           int    `json:"device_count"`
-	AppIDCount            int    `json:"app_id_count"`
+	Version                string `json:"version"`
+	ProfileExpiryAt        string `json:"profile_expiry_at"`
+	CertSerial             string `json:"cert_serial"`
+	TeamID                 string `json:"team_id"`
+	DeviceCount            int    `json:"device_count"`
+	AppIDCount             int    `json:"app_id_count"`
 }
 
-func runSignonly(cfg config, workDir, sourceIPA, signedIPA, machineName string) (*signonlyResult, error) {
+func runSignonly(cfg config, workDir, sourceIPA, signedIPA, machineName, deviceUDID, deviceName, deviceType string) (*signonlyResult, error) {
 	if cfg.appleID == "" || cfg.applePassword == "" {
 		return nil, errors.New("Apple credentials not configured (SIDEY_APPLE_ID / SIDEY_APPLE_MAIN_PASSWORD)")
+	}
+	if deviceUDID == "" {
+		return nil, errors.New("no device UDID: refusing to sign without a target device")
 	}
 	cmd := exec.Command(cfg.signonlyBin, cfg.appleID, cfg.applePassword, sourceIPA, signedIPA)
 	cmd.Env = append(os.Environ(),
 		"SIDEY_ISIDELOAD_STATE="+cfg.stateRuntime,
 		"ANISETTE_URL="+cfg.anisetteURL,
 		"MACHINE_NAME="+machineName,
+		"DEVICE_UDID="+deviceUDID,
+		"DEVICE_NAME="+deviceName,
+		"DEVICE_TYPE="+deviceType,
 		"SIGNONLY_2FA_CODE_FILE="+cfg.codeFile,
 	)
 	var stdout, stderr bytes.Buffer
@@ -704,7 +719,7 @@ func encryptState(runtimeDir, stateDir string) error {
 // ---------------------------------------------------------------------------
 // Upload
 
-func uploadSignedIPA(cfg config, agentKey string, params signParams, deviceID string, res *signonlyResult, signedIPA string) (string, error) {
+func uploadSignedIPA(cfg config, agentKey, jobID string, params signParams, deviceID string, res *signonlyResult, signedIPA string) (string, error) {
 	file, err := os.Open(signedIPA)
 	if err != nil {
 		return "", err
@@ -719,16 +734,17 @@ func uploadSignedIPA(cfg config, agentKey string, params signParams, deviceID st
 		return "", err
 	}
 	fields := map[string]string{
-		"source_artifact_id":        params.ArtifactID,
-		"device_id":                 deviceID,
-		"account_email":             cfg.appleID,
-		"team_id":                   res.TeamID,
-		"cert_serial":               res.CertSerial,
-		"profile_expiry_at":         res.ProfileExpiryAt,
-		"signed_bundle_identifier":  res.SignedBundleIdentifier,
-		"signed_ipa_sha256":         res.SignedIPASha256,
-		"device_count":              fmt.Sprintf("%d", res.DeviceCount),
-		"app_id_count":              fmt.Sprintf("%d", res.AppIDCount),
+		"job_id":                   jobID,
+		"source_artifact_id":       params.ArtifactID,
+		"device_id":                deviceID,
+		"account_email":            cfg.appleID,
+		"team_id":                  res.TeamID,
+		"cert_serial":              res.CertSerial,
+		"profile_expiry_at":        res.ProfileExpiryAt,
+		"signed_bundle_identifier": res.SignedBundleIdentifier,
+		"signed_ipa_sha256":        res.SignedIPASha256,
+		"device_count":             fmt.Sprintf("%d", res.DeviceCount),
+		"app_id_count":             fmt.Sprintf("%d", res.AppIDCount),
 	}
 	for k, v := range fields {
 		if v == "" {

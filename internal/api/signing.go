@@ -20,7 +20,9 @@ type createSignJobRequest struct {
 
 // handleCreateSignJob enqueues a signing job for an approved artifact and a
 // device. The device must be registered with the signing team (or get
-// registered by the worker during signing).
+// registered by the worker during signing). The job carries the target
+// device's UDID and name so the signing worker signs for the right device,
+// never a hardcoded default.
 func (s *Server) handleCreateSignJob(w http.ResponseWriter, r *http.Request) {
 	var req createSignJobRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -44,12 +46,21 @@ func (s *Server) handleCreateSignJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var deviceID uuid.UUID
+	var deviceUDID, deviceName, devicePlatform string
 	err = s.pool.QueryRow(r.Context(),
-		`SELECT id FROM devices WHERE id = $1`, req.DeviceID).Scan(&deviceID)
+		`SELECT udid, COALESCE(device_name, ''), COALESCE(platform, 'ios') FROM devices WHERE id = $1`,
+		req.DeviceID).Scan(&deviceUDID, &deviceName, &devicePlatform)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "device not found"})
 		return
+	}
+	// The same source IPA must be signable independently for iOS and tvOS
+	// (Phase F): platform maps to DEVICE_TYPE so device registration, App ID
+	// registration and provisioning profile downloads hit the right portal
+	// endpoints. Unknown platforms default to iOS.
+	deviceType := "ios"
+	if devicePlatform == "tvos" || devicePlatform == "tvOS" {
+		deviceType = "tvos"
 	}
 
 	machineName := req.MachineName
@@ -57,8 +68,11 @@ func (s *Server) handleCreateSignJob(w http.ResponseWriter, r *http.Request) {
 		machineName = "isideload-minimal"
 	}
 	parameters, err := json.Marshal(map[string]any{
-		"artifact_id":   req.ArtifactID,
-		"machine_name":  machineName,
+		"artifact_id":  req.ArtifactID,
+		"machine_name": machineName,
+		"udid":         deviceUDID,
+		"device_name":  deviceName,
+		"device_type":  deviceType,
 	})
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "parameter encoding failed")
@@ -113,6 +127,7 @@ func (s *Server) handleAgentDownloadArtifact(w http.ResponseWriter, r *http.Requ
 }
 
 type signedArtifactUploadRequest struct {
+	JobID                  uuid.UUID `json:"job_id"`
 	SourceArtifactID       uuid.UUID `json:"source_artifact_id"`
 	DeviceID               uuid.UUID `json:"device_id"`
 	AccountEmail           string    `json:"account_email"`
@@ -129,13 +144,16 @@ type signedArtifactUploadRequest struct {
 // handleUploadSignedArtifact stores the signed IPA produced by the signing
 // worker and records it against the source artifact, device and signing team.
 // The IPA is sent as multipart form field "ipa"; metadata travels in the same
-// form.
+// form. The upload is bound to the sign job that produced it: the caller must
+// hold the job (claimed_by), and the job must target the same device and
+// source artifact, or the upload is refused.
 func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid multipart form"})
 		return
 	}
 	var req signedArtifactUploadRequest
+	req.JobID, _ = uuid.Parse(r.FormValue("job_id"))
 	req.SourceArtifactID, _ = uuid.Parse(r.FormValue("source_artifact_id"))
 	req.DeviceID, _ = uuid.Parse(r.FormValue("device_id"))
 	req.AccountEmail = r.FormValue("account_email")
@@ -148,8 +166,16 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 	fmt.Sscanf(r.FormValue("device_count"), "%d", &req.DeviceCount)
 	fmt.Sscanf(r.FormValue("app_id_count"), "%d", &req.AppIDCount)
 
-	if req.SourceArtifactID == uuid.Nil || req.DeviceID == uuid.Nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "source_artifact_id and device_id are required"})
+	if req.SourceArtifactID == uuid.Nil || req.DeviceID == uuid.Nil || req.JobID == uuid.Nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "job_id, source_artifact_id and device_id are required"})
+		return
+	}
+
+	// The upload must be the derivative of the caller's own sign job for this
+	// device and source artifact. Validate before consuming the IPA body so an
+	// invalid binding costs nothing.
+	bound := s.validateSignUploadBinding(w, r, req)
+	if !bound {
 		return
 	}
 
@@ -243,12 +269,12 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 	err = tx.QueryRow(r.Context(), `
 		INSERT INTO signed_artifacts (source_artifact_id, device_id, account_id,
 			certificate_id, provisioning_profile_ref, signed_bundle_identifier,
-			profile_expiry_at, signed_ipa_sha256)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			profile_expiry_at, signed_ipa_sha256, job_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id`,
 		req.SourceArtifactID, req.DeviceID, accountID, certID,
 		nullString(req.ProvisioningProfileRef), req.SignedBundleIdentifier,
-		profileExpiry, sha256).Scan(&signedID)
+		profileExpiry, sha256, req.JobID).Scan(&signedID)
 	if err != nil {
 		fail(http.StatusInternalServerError, "signed artifact insert failed")
 		return
@@ -258,10 +284,54 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.audit.Record(r.Context(), "agent:"+agentID(r.Context()).String(), "signed_artifact.uploaded",
-		audit.WithData(map[string]any{"signed_artifact_id": signedID, "sha256": sha256}))
+		audit.WithData(map[string]any{"signed_artifact_id": signedID, "sha256": sha256, "job_id": req.JobID}))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id": signedID, "sha256": sha256,
 	})
+}
+
+// validateSignUploadBinding checks that the uploader holds a sign job for the
+// exact device and source artifact named in the upload. It writes the HTTP
+// response and returns false when the binding is invalid.
+func (s *Server) validateSignUploadBinding(w http.ResponseWriter, r *http.Request, req signedArtifactUploadRequest) bool {
+	var (
+		jobType    string
+		jobDevice  *uuid.UUID
+		jobClaimed *uuid.UUID
+		jobState   string
+		params     json.RawMessage
+	)
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT job_type, device_id, claimed_by, state, parameters
+		 FROM jobs WHERE id = $1`, req.JobID).
+		Scan(&jobType, &jobDevice, &jobClaimed, &jobState, &params)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "job not found"})
+		return false
+	}
+	if jobType != jobs.JobTypeSign || jobClaimed == nil || *jobClaimed != agentID(r.Context()) {
+		writeJSON(w, http.StatusForbidden,
+			map[string]any{"error": "upload is not bound to a sign job held by this agent"})
+		return false
+	}
+	if jobDevice == nil || *jobDevice != req.DeviceID {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "sign job does not target this device"})
+		return false
+	}
+	switch jobState {
+	case jobs.StateClaimed, jobs.StateInProgress:
+	default:
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "sign job is not in progress"})
+		return false
+	}
+	var jobParams struct {
+		ArtifactID uuid.UUID `json:"artifact_id"`
+	}
+	if err := json.Unmarshal(params, &jobParams); err != nil || jobParams.ArtifactID != req.SourceArtifactID {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "sign job does not reference this source artifact"})
+		return false
+	}
+	return true
 }
 
 // handleListSignedArtifacts returns signed artifacts joined with their source

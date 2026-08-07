@@ -3,7 +3,7 @@ use std::fmt::Display;
 use crate::{
     dev::{
         certificates::DevelopmentCertificate, developer_session::DeveloperSession,
-        teams::DeveloperTeam,
+        device_type::DeveloperDeviceType, teams::DeveloperTeam,
     },
     sideload::sideloader::Sideloader,
     util::storage::SideloadingStorage,
@@ -84,6 +84,7 @@ pub struct SideloaderBuilder {
     storage: Option<Box<dyn SideloadingStorage>>,
     machine_name: Option<String>,
     delete_app_after_install: bool,
+    device_type: Option<DeveloperDeviceType>,
 }
 
 impl SideloaderBuilder {
@@ -97,6 +98,7 @@ impl SideloaderBuilder {
             apple_email,
             max_certs_behavior: None,
             delete_app_after_install: true,
+            device_type: None,
             // extensions_behavior: None,
         }
     }
@@ -141,6 +143,14 @@ impl SideloaderBuilder {
         self
     }
 
+    /// Set the device type (iOS, tvOS, ... ) used for device registration,
+    /// App ID registration and provisioning profile downloads. Defaults to
+    /// iOS when unset (matching the classic sideloading behaviour).
+    pub fn device_type(mut self, device_type: impl Into<Option<DeveloperDeviceType>>) -> Self {
+        self.device_type = device_type.into();
+        self
+    }
+
     // pub fn extensions_behavior(mut self, behavior: ExtensionsBehavior) -> Self {
     //     self.extensions_behavior = Some(behavior);
     //     self
@@ -159,6 +169,7 @@ impl SideloaderBuilder {
             // self.extensions_behavior
             //     .unwrap_or(ExtensionsBehavior::RegisterAll),
             self.delete_app_after_install,
+            self.device_type,
         )
     }
 }
