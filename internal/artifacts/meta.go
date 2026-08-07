@@ -20,7 +20,22 @@ type Metadata struct {
 	BuildNumber      string
 	MinOSVersion     string
 	Platform         string
+	DevicePlatform   string
 	Extensions       []string
+}
+
+// Platform families Sidey supports. DevicePlatform is normalised from the
+// Apple SDK platform name in CFBundleSupportedPlatforms.
+const (
+	PlatformiOS  = "ios"
+	PlatformTVOS = "tvos"
+)
+
+// sdkPlatformToDevice maps the Apple SDK platform name to the device
+// platform used across the control plane (devices.platform, DEVICE_TYPE).
+var sdkPlatformToDevice = map[string]string{
+	"iPhoneOS":  PlatformiOS,
+	"AppleTVOS": PlatformTVOS,
 }
 
 // ErrMalformed marks archives that are not a valid IPA (not a zip, no
@@ -72,6 +87,15 @@ func Inspect(ipaPath string) (*Metadata, error) {
 	}
 	if meta.BundleIdentifier == "" {
 		return nil, fmt.Errorf("%w: Info.plist lacks CFBundleIdentifier", ErrMalformed)
+	}
+
+	// Platform validation (Phase G): tvOS IPAs declare AppleTVOS, iOS ones
+	// iPhoneOS. Anything else (watchOS, macOS, ...) is not a target Sidey
+	// can sign and install, so reject it up front instead of storing an
+	// artifact that can never be deployed.
+	meta.DevicePlatform = sdkPlatformToDevice[meta.Platform]
+	if meta.Platform != "" && meta.DevicePlatform == "" {
+		return nil, fmt.Errorf("%w: unsupported platform %q (expected iPhoneOS or AppleTVOS)", ErrMalformed, meta.Platform)
 	}
 
 	// App extensions live in <app>/PlugIns/*.appex. Every entry under that

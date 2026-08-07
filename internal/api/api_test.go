@@ -191,9 +191,14 @@ func enrolAgent(t *testing.T, name string) (uuid.UUID, string) {
 
 func reportDevice(t *testing.T, agentKey, udid string) uuid.UUID {
 	t.Helper()
+	return reportDevicePlatform(t, agentKey, udid, "ios")
+}
+
+func reportDevicePlatform(t *testing.T, agentKey, udid, platform string) uuid.UUID {
+	t.Helper()
 	res, body := doJSON(t, "POST", "/api/v1/agents/me/devices", agentKey, map[string]any{
 		"devices": []map[string]any{{
-			"udid": udid, "platform": "ios", "device_name": "test phone",
+			"udid": udid, "platform": platform, "device_name": "test phone",
 			"model": "iPhone15,2", "os_version": "27.0",
 			"pairing_status": "paired", "developer_mode_enabled": true,
 		}},

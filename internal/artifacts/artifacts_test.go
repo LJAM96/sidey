@@ -19,6 +19,20 @@ const testInfoPlist = `<?xml version="1.0"?>
   <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
 </dict></plist>`
 
+// testInfoPlistPlatform returns the fixture Info.plist with the given
+// CFBundleSupportedPlatforms entry (used to vary the target platform).
+func testInfoPlistPlatform(sdkPlatform string) string {
+	return `<?xml version="1.0"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>com.example.Test</string>
+  <key>CFBundleShortVersionString</key><string>1.2.3</string>
+  <key>CFBundleVersion</key><string>45</string>
+  <key>MinimumOSVersion</key><string>15.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>` + sdkPlatform + `</string></array>
+</dict></plist>`
+}
+
 // buildIPA creates a zip with the given entries (valid IPA layouts include
 // Payload/Test.app/Info.plist).
 func buildIPA(t *testing.T, entries map[string]string) []byte {
@@ -96,6 +110,61 @@ func TestInspectRejectsMalformed(t *testing.T) {
 	}))
 	if _, err := Inspect(badPlist); !errors.Is(err, ErrMalformed) {
 		t.Errorf("bad plist: err = %v", err)
+	}
+}
+
+// TestInspectTVOS covers Phase G: AppleTVOS archives are recognised as tvOS
+// artifacts, distinct from iOS ones.
+func TestInspectTVOS(t *testing.T) {
+	path := writeIPA(t, "tvos.ipa", buildIPA(t, map[string]string{
+		"Payload/Test.app/Info.plist": testInfoPlistPlatform("AppleTVOS"),
+		"Payload/Test.app/Test":       "binary",
+	}))
+
+	meta, err := Inspect(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Platform != "AppleTVOS" {
+		t.Errorf("platform = %q", meta.Platform)
+	}
+	if meta.DevicePlatform != PlatformTVOS {
+		t.Errorf("device platform = %q, want tvos", meta.DevicePlatform)
+	}
+}
+
+// TestInspectPlatformNormalisation covers the SDK->device platform mapping
+// for every platform Sidey accepts.
+func TestInspectPlatformNormalisation(t *testing.T) {
+	cases := map[string]string{
+		"iPhoneOS":  PlatformiOS,
+		"AppleTVOS": PlatformTVOS,
+	}
+	for sdk, want := range cases {
+		path := writeIPA(t, sdk+".ipa", buildIPA(t, map[string]string{
+			"Payload/Test.app/Info.plist": testInfoPlistPlatform(sdk),
+		}))
+		meta, err := Inspect(path)
+		if err != nil {
+			t.Fatalf("%s: %v", sdk, err)
+		}
+		if meta.DevicePlatform != want {
+			t.Errorf("%s: device platform = %q, want %q", sdk, meta.DevicePlatform, want)
+		}
+	}
+}
+
+// TestInspectRejectsUnsupportedPlatform covers Phase G: an archive declaring
+// a platform Sidey cannot sign or install (watchOS, macOS, ...) is refused at
+// inspection time.
+func TestInspectRejectsUnsupportedPlatform(t *testing.T) {
+	for _, sdk := range []string{"WatchOS", "MacOSX", "UnknownOS"} {
+		path := writeIPA(t, sdk+".ipa", buildIPA(t, map[string]string{
+			"Payload/Test.app/Info.plist": testInfoPlistPlatform(sdk),
+		}))
+		if _, err := Inspect(path); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: err = %v, want ErrMalformed", sdk, err)
+		}
 	}
 }
 

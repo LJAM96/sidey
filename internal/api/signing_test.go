@@ -99,6 +99,69 @@ func TestSignJobGating(t *testing.T) {
 	}
 }
 
+// TestSignJobPlatformMismatch covers the Phase G guard: an artifact must be
+// signed only for devices of the same platform family. A tvOS artifact cannot
+// be signed for an iOS device (and vice versa), while matching families pass.
+func TestSignJobPlatformMismatch(t *testing.T) {
+	truncate(t)
+	_, apiKey := enrolAgent(t, "edge-1")
+	iosDevice := reportDevicePlatform(t, apiKey, "00008120-0000000000000201", "ios")
+	tvosDevice := reportDevicePlatform(t, apiKey, "00008120-0000000000000202", "tvos")
+
+	tvosArtifact := uploadApprovedPlatform(t, "com.example.TVOS.%d", "AppleTVOS")
+	iosArtifact := uploadApprovedPlatform(t, "com.example.IOS.%d", "iPhoneOS")
+
+	// A tvOS artifact must not be signed for an iOS device.
+	res, body := doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
+		"artifact_id": tvosArtifact.String(), "device_id": iosDevice.String(),
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("tvos artifact -> ios device: %d %v", res.StatusCode, body)
+	}
+
+	// An iOS artifact must not be signed for a tvOS device.
+	res, body = doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
+		"artifact_id": iosArtifact.String(), "device_id": tvosDevice.String(),
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("ios artifact -> tvos device: %d %v", res.StatusCode, body)
+	}
+
+	// Matching families are accepted.
+	res, body = doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
+		"artifact_id": tvosArtifact.String(), "device_id": tvosDevice.String(),
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("tvos artifact -> tvos device: %d %v", res.StatusCode, body)
+	}
+	res, body = doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
+		"artifact_id": iosArtifact.String(), "device_id": iosDevice.String(),
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("ios artifact -> ios device: %d %v", res.StatusCode, body)
+	}
+}
+
+// uploadApprovedPlatform uploads an IPA of the given SDK platform and moves
+// it through quarantine to approved.
+func uploadApprovedPlatform(t *testing.T, bundleFmt, sdkPlatform string) uuid.UUID {
+	t.Helper()
+	ipa := testIPAPlatform(t, fmt.Sprintf(bundleFmt, time.Now().UnixNano()), sdkPlatform)
+	res, body := uploadIPA(t, ipa)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("upload: %d %v", res.StatusCode, body)
+	}
+	id, err := uuid.Parse(body["id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _ = doJSON(t, "PATCH", "/api/v1/artifacts/"+id.String(), adminKey, map[string]any{"state": "approved"})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("approve: %d", res.StatusCode)
+	}
+	return id
+}
+
 // TestSignJobClaimedBySigningAgent covers the claim-side of Phase F: a sign
 // job is only delivered to agents that ask for job_types=["sign"], while the
 // same job stays invisible to refresh agents.

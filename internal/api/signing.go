@@ -63,6 +63,26 @@ func (s *Server) handleCreateSignJob(w http.ResponseWriter, r *http.Request) {
 		deviceType = "tvos"
 	}
 
+	// Platform family guard (Phase G): reject signing an artifact whose
+	// family does not match the target device before a job is created.
+	var artifactPlatform any
+	err = s.pool.QueryRow(r.Context(),
+		`SELECT platform FROM artifacts WHERE id = $1`, req.ArtifactID).Scan(&artifactPlatform)
+	if err == nil && artifactPlatform != nil {
+		if platform, ok := artifactPlatform.(string); ok && platform != "" {
+			artifactType := "ios"
+			if platform == "AppleTVOS" {
+				artifactType = "tvos"
+			}
+			if artifactType != deviceType {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": fmt.Sprintf("artifact platform %s does not match device platform %s", platform, devicePlatform),
+				})
+				return
+			}
+		}
+	}
+
 	machineName := req.MachineName
 	if machineName == "" {
 		machineName = "isideload-minimal"

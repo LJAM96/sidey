@@ -14,6 +14,13 @@ import (
 // testIPA builds a minimal valid IPA payload for upload tests.
 func testIPA(t *testing.T, bundleID string) []byte {
 	t.Helper()
+	return testIPAPlatform(t, bundleID, "iPhoneOS")
+}
+
+// testIPAPlatform builds an IPA declaring the given Apple SDK platform
+// (e.g. iPhoneOS, AppleTVOS).
+func testIPAPlatform(t *testing.T, bundleID, sdkPlatform string) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	plist := `<?xml version="1.0"?>
@@ -23,7 +30,7 @@ func testIPA(t *testing.T, bundleID string) []byte {
   <key>CFBundleShortVersionString</key><string>1.0.0</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>MinimumOSVersion</key><string>14.0</string>
-  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+  <key>CFBundleSupportedPlatforms</key><array><string>` + sdkPlatform + `</string></array>
 </dict></plist>`
 	for name, content := range map[string]string{
 		"Payload/Test.app/Info.plist": plist,
