@@ -1,0 +1,28 @@
+[Unit]
+Description=Sidey RemotePairing RSD tunnel to the iPhone (no-USB refresh path)
+Documentation=https://github.com/anomalyco/sidey-server
+# The device address is a tailnet IP, so the tunnel needs Tailscale up first.
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+# Requires root: the TCP tunnel creates a TUN device (/dev/net/tun).
+# --address is the phone's tailnet IP; --port 49152 is the RemotePairing
+# daemon port (not the legacy 62078 lockdown wifi listener).
+# The RPPairing record (created once over USB) must be visible to root;
+# pymobiledevice3 resolves its home dir as "~$SUDO_USER", so under systemd
+# it looks in /root/.pymobiledevice3.
+ExecStartPre=/bin/sh -c 'mkdir -p /root/.pymobiledevice3 && cp -n /home/ubuntu/.pymobiledevice3/remote_00008120-001E11211184C01E.plist /root/.pymobiledevice3/ 2>/dev/null || true'
+ExecStart=/opt/sidey/venv-pmd3/bin/python3 /home/ubuntu/git/sidey-server/scripts/wireless-tunnel.py --udid 00008120-001E11211184C01E --address 100.110.172.118 --port 49152 --endpoint-file /run/sidey/rsd-endpoint
+Restart=always
+# Keep retries gentle: the device throttles repeated failed pair-verifies
+# (recovers after a few minutes of quiet).
+RestartSec=60
+# Retry harder if the phone is offline for a while (e.g. home wifi outage).
+StartLimitIntervalSec=0
+RuntimeDirectory=sidey
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
