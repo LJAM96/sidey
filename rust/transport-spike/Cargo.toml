@@ -5,7 +5,7 @@ edition = "2021"
 description = "Sidey Phase B transport spike: external iOS/iPadOS device operations via idevice"
 
 [dependencies]
-idevice = { git = "https://github.com/jkcoxson/idevice", rev = "7fe8adbdf8c72385971b05a86857e02d6fa2ed7c", default-features = false, features = ["usbmuxd", "afc", "house_arrest", "installation_proxy", "misagent", "pair", "tcp", "rustcrypto"] }
+idevice = { git = "https://github.com/jkcoxson/idevice", rev = "7fe8adbdf8c72385971b05a86857e02d6fa2ed7c", default-features = false, features = ["usbmuxd", "afc", "house_arrest", "installation_proxy", "misagent", "pair", "tcp", "rustcrypto", "diagnostics_relay"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"

@@ -64,6 +64,15 @@ enum Command {
         #[arg(long, help = "Path inside Documents (default: root)")]
         path: Option<String>,
     },
+    /// Restart the device (diagnostics relay)
+    Restart,
+    /// Put the device display to sleep (locks it if passcode/Face ID is set)
+    Sleep,
+    /// Wait for the device to reappear on usbmuxd (after restart etc.)
+    Wait {
+        #[arg(long, default_value_t = 300, help = "seconds to wait")]
+        timeout: u64,
+    },
 }
 
 #[tokio::main]
@@ -117,6 +126,17 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Documents { bundle_id, path } => {
             let (dev, provider) = select_provider(cli.udid.as_deref()).await?;
             cmd_documents(&dev, &provider, &bundle_id, path.as_deref()).await
+        }
+        Command::Restart => {
+            let (_dev, provider) = select_provider(cli.udid.as_deref()).await?;
+            cmd_restart(&provider).await
+        }
+        Command::Sleep => {
+            let (_dev, provider) = select_provider(cli.udid.as_deref()).await?;
+            cmd_sleep(&provider).await
+        }
+        Command::Wait { timeout } => {
+            cmd_wait(cli.udid.as_deref(), timeout).await
         }
     }
 }
@@ -258,6 +278,63 @@ async fn cmd_validate(dev: &UsbmuxdDevice, provider: &dyn IdeviceProvider) -> Re
         Err(e) => println!("session=ok product_version=unavailable error={e}"),
     }
     Ok(())
+}
+
+async fn cmd_restart(provider: &dyn IdeviceProvider) -> Result<()> {
+    use idevice::services::diagnostics_relay::DiagnosticsRelayClient;
+    let mut diag = DiagnosticsRelayClient::connect(provider)
+        .await
+        .context("failed to connect to diagnostics relay")?;
+    diag.restart()
+        .await
+        .context("restart request failed (device may drop the link mid-request)")?;
+    println!("restart=requested");
+    Ok(())
+}
+
+async fn cmd_sleep(provider: &dyn IdeviceProvider) -> Result<()> {
+    use idevice::services::diagnostics_relay::DiagnosticsRelayClient;
+    let mut diag = DiagnosticsRelayClient::connect(provider)
+        .await
+        .context("failed to connect to diagnostics relay")?;
+    diag.sleep()
+        .await
+        .context("sleep request failed")?;
+    println!("sleep=requested");
+    Ok(())
+}
+
+async fn cmd_wait(udid: Option<&str>, timeout: u64) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+    let mut interval_ms = 2000u64;
+    loop {
+        // re-list from scratch each time; usbmuxd forgets the device while it
+        // is rebooting, so a stale UsbmuxdConnection would never see it again
+        match select_device(udid).await {
+            Ok(dev) => {
+                // the device can appear before lockdown is ready; a quick value
+                // read forces lockdown to answer on the fresh connection
+                let provider = dev.to_provider(usbmuxd_addr(), LABEL);
+                match LockdownClient::connect(&provider).await {
+                    Ok(mut l) => match l.get_value(Some("ProductVersion"), None).await {
+                        Ok(v) => {
+                            println!("wait=ready udid={} product_version={}",
+                                     dev.udid, plist_str(&v));
+                            return Ok(());
+                        }
+                        Err(e) => tracing::debug!("lockdown not ready yet: {e}"),
+                    },
+                    Err(e) => tracing::debug!("lockdown not ready yet: {e}"),
+                }
+            }
+            Err(_) => tracing::debug!("device {udid:?} not seen yet"),
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("device did not become ready within {timeout}s");
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval_ms));
+        interval_ms = (interval_ms as f64 * 1.5).min(10000.0) as u64;
+    }
 }
 
 async fn cmd_install_or_upgrade(

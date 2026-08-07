@@ -24,6 +24,11 @@
 #   SIDEY_TRANSPORT_MODE  usb (default) | rsd
 #   SIDEY_RSD_ADDR        RSD tunnel endpoint for rsd mode (else auto from /run/sidey/rsd-endpoint)
 #   SIDEY_RSD_PORT        RSD tunnel port for rsd mode
+#   SIDEY_SCENARIO        none (default) | restart | sleep | all
+#                         restart: reboot the device, wait for it to come back,
+#                           re-validate pairing and re-verify the installed app
+#                         sleep:   lock the screen, probe whether lockdown stalls
+#                           (passcode prompt) and wait for the operator to unlock
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -58,6 +63,7 @@ BUNDLE_ID="${SIDEY_TEST_BUNDLE_ID:-}"
 MODE="${SIDEY_TRANSPORT_MODE:-usb}"
 RSD_ADDR="${SIDEY_RSD_ADDR:-}"
 RSD_PORT="${SIDEY_RSD_PORT:-}"
+SCENARIO="${SIDEY_SCENARIO:-none}"
 
 [ -f "$ORIGINAL_IPA" ] || { echo "test IPA not found: $ORIGINAL_IPA" >&2; exit 1; }
 
@@ -137,6 +143,7 @@ echo "device: $DEVICE_UDID ($DEVICE_NAME)"
 echo "results: $OUT_DIR"
 step "phase" "B"
 step "mode" "$MODE"
+step "scenario" "$SCENARIO"
 step "device.udid" "$DEVICE_UDID"
 step "ipa" "$ORIGINAL_IPA"
 
@@ -303,6 +310,58 @@ fi
 spike_step "verify-v2" "$SPIKE_BIN" --udid "$DEVICE_UDID" verify --bundle-id "$BUNDLE_ID"
 record_key_value "verify-v2"
 
+# 4b. Scenarios (restart / sleep) - prove the pairing record and the
+# installed app survive a device reboot, and characterise the locked state.
+if [ "$SCENARIO" = "restart" ] || [ "$SCENARIO" = "all" ]; then
+  echo ">> scenario: restart device and re-validate"
+  soft_step "scenario-restart" "$SPIKE_BIN" --udid "$DEVICE_UDID" restart
+  if usbmuxd_available; then
+    spike_step "scenario-restart-wait" "$SPIKE_BIN" --udid "$DEVICE_UDID" wait --timeout 300
+    spike_step "scenario-restart-validate" "$SPIKE_BIN" --udid "$DEVICE_UDID" validate
+    spike_step "scenario-restart-verify" "$SPIKE_BIN" --udid "$DEVICE_UDID" verify --bundle-id "$BUNDLE_ID"
+    record_key_value "scenario-restart-verify"
+  fi
+fi
+
+if [ "$SCENARIO" = "sleep" ] || [ "$SCENARIO" = "all" ]; then
+  echo ">> scenario: lock the device and probe lockdown"
+  soft_step "scenario-sleep" "$SPIKE_BIN" --udid "$DEVICE_UDID" sleep
+  # After a sleep the screen locks (passcode/Face ID). Lockdown exchanges on
+  # a locked phone either stall or refuse; run the probe with a bounded
+  # timeout and record whichever happens. A non-zero/timeout is expected here.
+  if usbmuxd_available; then
+    SL_LOG="$OUT_DIR/step-scenario-sleep-probe.log"
+    echo ">> [scenario-sleep-probe] (locked) validate + info, 20s bound each"
+    step "scenario-sleep.probe.start" "$(date -u +%FT%TZ)"
+    timeout 20 "$SPIKE_BIN" --udid "$DEVICE_UDID" validate > "$SL_LOG" 2>&1
+    VRC=$?
+    step "scenario-sleep.validate_exit" "$VRC"
+    timeout 20 "$SPIKE_BIN" --udid "$DEVICE_UDID" info >> "$SL_LOG" 2>&1
+    IRC=$?
+    step "scenario-sleep.info_exit" "$IRC"
+    if [ "$VRC" = "0" ] && [ "$IRC" = "0" ]; then
+      echo "[scenario-sleep] WARNING: locked device still answered lockdown; is a passcode set?" >&2
+      step "scenario-sleep.locked_detected" "no"
+    else
+      echo "[scenario-sleep] locked device stalls/refuses lockdown as expected" >&2
+      step "scenario-sleep.locked_detected" "yes"
+    fi
+    echo
+    echo ">> scenario: unlock the device now (passcode/Face ID); the proof waits."
+    step "scenario-sleep.unlock_wait.start" "$(date -u +%FT%TZ)"
+    UNLOCKED=no
+    for i in $(seq 1 60); do
+      if timeout 20 "$SPIKE_BIN" --udid "$DEVICE_UDID" validate > /dev/null 2>&1; then
+        UNLOCKED=yes
+        step "scenario-sleep.unlock_wait_sec" "$((i * 5))"
+        break
+      fi
+      sleep 5
+    done
+    step "scenario-sleep.unlocked" "$UNLOCKED"
+  fi
+fi
+
 # 5. Cleanup.
 if [ "${SIDEY_KEEP_INSTALLED:-0}" != "1" ]; then
   spike_step "uninstall" "$SPIKE_BIN" --udid "$DEVICE_UDID" uninstall --bundle-id "$BUNDLE_ID"
@@ -342,6 +401,9 @@ verdict = {
     "uninstalled": status("uninstall:exit"),
     "pairing_validated": status("validate:exit") if status("validate:exit") != "fail"
                         else status("rsd-install.exit"),
+    "restart_survived": status("scenario-restart-verify:exit"),
+    "locked_stalls_lockdown": steps.get("scenario-sleep.locked_detected"),
+    "unlocked_after_prompt": steps.get("scenario-sleep.unlocked"),
 }
 report = {
     "phase": "B",
