@@ -1,0 +1,30 @@
+[2m2026-08-07T20:41:58.814453Z[0m [32m INFO[0m [2misideload::auth::apple_account[0m[2m:[0m Logging in to Apple ID: a***REDACTED@REDACTED
+[2m2026-08-07T20:41:58.814740Z[0m [32m INFO[0m [2misideload::anisette::remote_v3[0m[2m:[0m Loaded existing anisette state
+[2m2026-08-07T20:41:59.068526Z[0m [32m INFO[0m [2misideload::auth::apple_account[0m[2m:[0m Successfully logged in to Apple ID
+LOGIN OK - account: REDACTED@REDACTED
+[2m2026-08-07T20:41:59.332434Z[0m [32m INFO[0m [2misideload::auth::apple_account[0m[2m:[0m Successfully retrieved app token for com.apple.gs.xcode.auth
+[2m2026-08-07T20:41:59.747431Z[0m [33m WARN[0m [2midevice::xpc::format[0m[2m:[0m Body length is 16356, but received bytes is 16374
+RSD handshake OK - protocol v7, 64 services
+Registering device 00008120-001E11211184C01E with the team...
+[2m2026-08-07T20:42:00.503978Z[0m [32m INFO[0m [2misideload::dev::devices[0m[2m:[0m Device is a development device
+[2m2026-08-07T20:42:00.504067Z[0m [32m INFO[0m [2misideload::sideload::cert_identity[0m[2m:[0m Using existing private key from storage
+[2m2026-08-07T20:42:00.743703Z[0m [32m INFO[0m [2misideload::sideload::cert_identity[0m[2m:[0m Found matching certificate
+[2m2026-08-07T20:42:01.120352Z[0m [32m INFO[0m [2misideload::sideload::application[0m[2m:[0m Registered app IDs
+[2m2026-08-07T20:42:01.711598Z[0m [32m INFO[0m [2misideload::sideload::sideloader[0m[2m:[0m App IDs configured
+[2m2026-08-07T20:42:02.004812Z[0m [32m INFO[0m [2misideload::sideload::sideloader[0m[2m:[0m Acquired provisioning profile
+[2m2026-08-07T20:42:02.018820Z[0m [32m INFO[0m [2misideload::sideload::sign[0m[2m:[0m Signing PhaseTest.app
+[2m2026-08-07T20:42:02.045016Z[0m [32m INFO[0m [2misideload::sideload::sideloader[0m[2m:[0m App signed!
+App signed - installing over RSD tunnel...
+Installing: 5%
+Installing: 15%
+Installing: 20%
+Installing: 30%
+Installing: 40%
+Installing: 50%
+Installing: 60%
+Installing: 70%
+Installing: 80%
+Installing: 90%
+Installing: 100%
+TERMINAL INSTALL Complete
+{"cert_serial":"32BA6B7154E31C45F1963D07A54B19EB","installed":true,"profile_expiry_at":"2026-08-14T20:42:01Z","signed_bundle_identifier":"org.sidey.phasetest.A7VT6RU6XK","status":"ok","team_id":"A7VT6RU6XK"}

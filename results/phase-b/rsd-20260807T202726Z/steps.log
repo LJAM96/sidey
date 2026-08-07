@@ -1,0 +1,20 @@
+2026-08-07T20:27:26Z	phase	B
+2026-08-07T20:27:26Z	mode	rsd
+2026-08-07T20:27:26Z	device.udid	00008120-001E11211184C01E
+2026-08-07T20:27:26Z	ipa	/tmp/opencode/sidetest.ipa
+2026-08-07T20:27:26Z	bundle_id	org.sidey.phasetest
+2026-08-07T20:27:26Z	usbmuxd.cloud_check	0
+2026-08-07T20:27:26Z	list.skipped.rsd	rsd
+2026-08-07T20:27:26Z	validate.skipped.rsd	rsd
+2026-08-07T20:27:26Z	sign.v1.start	2026-08-07T20:27:26Z
+2026-08-07T20:27:29Z	sign.v1.exit	0
+2026-08-07T20:27:29Z	sign.v1.profile_expiry	2026-08-14T20:27:28Z
+2026-08-07T20:27:29Z	sign.v1.cert_serial	32BA6B7154E31C45F1963D07A54B19EB
+2026-08-07T20:27:29Z	sign.v1.team_id	A7VT6RU6XK
+2026-08-07T20:27:39Z	rsd-install.exit	0
+2026-08-07T20:27:39Z	rsd-install.profile_expiry	2026-08-14T20:27:32Z
+2026-08-07T20:27:39Z	rsd-install.team_id	A7VT6RU6XK
+2026-08-07T20:27:39Z	verify-v1:exit	skipped
+2026-08-07T20:27:39Z	verify-v1.unavailable	usbmuxd down (VirtualHere link not up)
+2026-08-07T20:27:39Z	documents:exit	skipped
+2026-08-07T20:27:39Z	documents.unavailable	usbmuxd down (VirtualHere link not up)

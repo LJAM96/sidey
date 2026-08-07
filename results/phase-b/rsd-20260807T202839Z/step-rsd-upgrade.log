@@ -1,0 +1,21 @@
+[2m2026-08-07T20:28:55.352530Z[0m [32m INFO[0m [2misideload::auth::apple_account[0m[2m:[0m Logging in to Apple ID: a***REDACTED@REDACTED
+[2m2026-08-07T20:28:55.352651Z[0m [32m INFO[0m [2misideload::anisette::remote_v3[0m[2m:[0m Loaded existing anisette state
+[2m2026-08-07T20:28:55.698670Z[0m [32m INFO[0m [2misideload::auth::apple_account[0m[2m:[0m Successfully logged in to Apple ID
+LOGIN OK - account: REDACTED@REDACTED
+[2m2026-08-07T20:28:56.101866Z[0m [32m INFO[0m [2misideload::auth::apple_account[0m[2m:[0m Successfully retrieved app token for com.apple.gs.xcode.auth
+[2m2026-08-07T20:28:56.492027Z[0m [33m WARN[0m [2midevice::xpc::format[0m[2m:[0m Body length is 16356, but received bytes is 16374
+RSD handshake OK - protocol v7, 64 services
+Registering device 00008120-001E11211184C01E with the team...
+[2m2026-08-07T20:28:57.253283Z[0m [32m INFO[0m [2misideload::dev::devices[0m[2m:[0m Device is a development device
+[2m2026-08-07T20:28:57.253356Z[0m [32m INFO[0m [2misideload::sideload::cert_identity[0m[2m:[0m Using existing private key from storage
+[2m2026-08-07T20:28:57.451610Z[0m [32m INFO[0m [2misideload::sideload::cert_identity[0m[2m:[0m Found matching certificate
+[2m2026-08-07T20:28:57.815921Z[0m [32m INFO[0m [2misideload::sideload::application[0m[2m:[0m Registered app IDs
+[2m2026-08-07T20:28:58.345427Z[0m [32m INFO[0m [2misideload::sideload::sideloader[0m[2m:[0m App IDs configured
+[2m2026-08-07T20:28:58.605804Z[0m [32m INFO[0m [2misideload::sideload::sideloader[0m[2m:[0m Acquired provisioning profile
+[2m2026-08-07T20:28:58.618434Z[0m [32m INFO[0m [2misideload::sideload::sign[0m[2m:[0m Signing PhaseTest.app
+[2m2026-08-07T20:28:58.643590Z[0m [32m INFO[0m [2misideload::sideload::sideloader[0m[2m:[0m App signed!
+App signed - installing over RSD tunnel...
+Installing: 90%
+Installing: 100%
+TERMINAL INSTALL Complete
+{"cert_serial":"32BA6B7154E31C45F1963D07A54B19EB","installed":true,"profile_expiry_at":"2026-08-14T20:28:58Z","signed_bundle_identifier":"org.sidey.phasetest.A7VT6RU6XK","status":"ok","team_id":"A7VT6RU6XK"}

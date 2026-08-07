@@ -1,0 +1,41 @@
+2026-08-07T20:32:03Z	phase	B
+2026-08-07T20:32:03Z	mode	usb
+2026-08-07T20:32:03Z	device.udid	00008120-001E11211184C01E
+2026-08-07T20:32:03Z	ipa	/tmp/opencode/sidetest.ipa
+2026-08-07T20:32:03Z	bundle_id	org.sidey.phasetest
+2026-08-07T20:32:03Z	list:exit	0
+2026-08-07T20:32:03Z	validate:exit	0
+2026-08-07T20:32:04Z	info:exit	0
+2026-08-07T20:32:07Z	apps:exit	0
+2026-08-07T20:32:07Z	list.udid=00008120-001E11211184C01E connection=Usb
+2026-08-07T20:32:07Z	info.[2m2026-08-07T20:32:03.886404Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m device: udid=00008120-001E11211184C01E connection=Usb
+2026-08-07T20:32:07Z	info.DeviceName=ACU Covert Camera
+2026-08-07T20:32:07Z	info.ProductType=iPhone15,2
+2026-08-07T20:32:07Z	info.ProductVersion=27.0
+2026-08-07T20:32:07Z	info.BuildVersion=24A5390f
+2026-08-07T20:32:07Z	info.UniqueDeviceID=00008120-001E11211184C01E
+2026-08-07T20:32:07Z	info.WiFiAddress=70:b3:06:24:83:be
+2026-08-07T20:32:07Z	info.DeviceClass=iPhone
+2026-08-07T20:32:07Z	validate.[2m2026-08-07T20:32:03.701904Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m device: udid=00008120-001E11211184C01E connection=Usb
+2026-08-07T20:32:07Z	validate.pair_record=present
+2026-08-07T20:32:07Z	validate.session=ok product_version=27.0
+2026-08-07T20:32:07Z	sign.v1.start	2026-08-07T20:32:07Z
+2026-08-07T20:32:10Z	sign.v1.exit	0
+2026-08-07T20:32:10Z	sign.v1.profile_expiry	2026-08-14T20:32:09Z
+2026-08-07T20:32:10Z	sign.v1.cert_serial	32BA6B7154E31C45F1963D07A54B19EB
+2026-08-07T20:32:10Z	sign.v1.team_id	A7VT6RU6XK
+2026-08-07T20:32:14Z	install-v1:exit	0
+2026-08-07T20:32:14Z	verify-v1:exit	skipped
+2026-08-07T20:32:14Z	verify-v1.unavailable	usbmuxd down (VirtualHere link not up)
+2026-08-07T20:32:14Z	documents:exit	skipped
+2026-08-07T20:32:14Z	documents.unavailable	usbmuxd down (VirtualHere link not up)
+2026-08-07T20:32:14Z	upgrade.ipa.v2	/home/ubuntu/git/sidey-server/results/phase-b/usb-20260807T203203Z/test-v2.ipa
+2026-08-07T20:32:14Z	sign.v2.start	2026-08-07T20:32:14Z
+2026-08-07T20:32:18Z	sign.v2.exit	0
+2026-08-07T20:32:22Z	upgrade-v2:exit	0
+2026-08-07T20:32:22Z	verify-v2:exit	skipped
+2026-08-07T20:32:22Z	verify-v2.unavailable	usbmuxd down (VirtualHere link not up)
+2026-08-07T20:32:22Z	uninstall:exit	skipped
+2026-08-07T20:32:22Z	uninstall.unavailable	usbmuxd down (VirtualHere link not up)
+2026-08-07T20:32:22Z	apps-final:exit	skipped
+2026-08-07T20:32:22Z	apps-final.unavailable	usbmuxd down (VirtualHere link not up)

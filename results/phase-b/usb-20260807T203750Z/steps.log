@@ -1,0 +1,30 @@
+2026-08-07T20:37:50Z	phase	B
+2026-08-07T20:37:50Z	mode	usb
+2026-08-07T20:37:50Z	device.udid	00008120-001E11211184C01E
+2026-08-07T20:37:50Z	ipa	/tmp/opencode/sidetest.ipa
+2026-08-07T20:37:50Z	bundle_id	org.sidey.phasetest
+2026-08-07T20:37:50Z	list:exit	0
+2026-08-07T20:37:50Z	validate:exit	0
+2026-08-07T20:37:51Z	info:exit	0
+2026-08-07T20:37:53Z	apps:exit	0
+2026-08-07T20:37:53Z	list.udid	00008120-001E11211184C01E connection=Usb
+2026-08-07T20:37:53Z	info.[2m2026-08-07T20:37:50.386185Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m device: udid	00008120-001E11211184C01E connection=Usb
+2026-08-07T20:37:53Z	info.DeviceName	ACU Covert Camera
+2026-08-07T20:37:53Z	info.ProductType	iPhone15,2
+2026-08-07T20:37:53Z	info.ProductVersion	27.0
+2026-08-07T20:37:53Z	info.BuildVersion	24A5390f
+2026-08-07T20:37:53Z	info.UniqueDeviceID	00008120-001E11211184C01E
+2026-08-07T20:37:53Z	info.WiFiAddress	70:b3:06:24:83:be
+2026-08-07T20:37:53Z	info.DeviceClass	iPhone
+2026-08-07T20:37:53Z	validate.[2m2026-08-07T20:37:50.199662Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m device: udid	00008120-001E11211184C01E connection=Usb
+2026-08-07T20:37:53Z	validate.pair_record	present
+2026-08-07T20:37:53Z	validate.session	ok product_version=27.0
+2026-08-07T20:37:53Z	sign.v1.start	2026-08-07T20:37:53Z
+2026-08-07T20:37:57Z	sign.v1.exit	0
+2026-08-07T20:37:57Z	sign.v1.profile_expiry	2026-08-14T20:37:56Z
+2026-08-07T20:37:57Z	sign.v1.cert_serial	32BA6B7154E31C45F1963D07A54B19EB
+2026-08-07T20:37:57Z	sign.v1.team_id	A7VT6RU6XK
+2026-08-07T20:37:57Z	bundle_id.signed	org.sidey.phasetest.A7VT6RU6XK
+2026-08-07T20:38:01Z	install-v1:exit	0
+2026-08-07T20:38:11Z	verify-v1:exit	0
+2026-08-07T20:38:12Z	documents:exit	1

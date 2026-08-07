@@ -1,0 +1,13 @@
+2026-08-07T20:26:33Z	phase	B
+2026-08-07T20:26:33Z	mode	rsd
+2026-08-07T20:26:33Z	device.udid	00008120-001E11211184C01E
+2026-08-07T20:26:33Z	ipa	/tmp/opencode/sidetest.ipa
+2026-08-07T20:26:33Z	bundle_id	org.sidey.phasetest
+2026-08-07T20:26:33Z	usbmuxd.cloud_check	0
+2026-08-07T20:26:33Z	list.skipped.rsd	rsd
+2026-08-07T20:26:33Z	validate.skipped.rsd	rsd
+2026-08-07T20:26:33Z	sign.v1.start	2026-08-07T20:26:33Z
+2026-08-07T20:26:36Z	sign.v1.exit	0
+2026-08-07T20:26:36Z	sign.v1.profile_expiry	
+2026-08-07T20:26:36Z	sign.v1.cert_serial	
+2026-08-07T20:26:36Z	sign.v1.team_id	

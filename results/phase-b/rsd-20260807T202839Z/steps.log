@@ -1,0 +1,28 @@
+2026-08-07T20:28:39Z	phase	B
+2026-08-07T20:28:39Z	mode	rsd
+2026-08-07T20:28:39Z	device.udid	00008120-001E11211184C01E
+2026-08-07T20:28:39Z	ipa	/tmp/opencode/sidetest.ipa
+2026-08-07T20:28:39Z	bundle_id	org.sidey.phasetest
+2026-08-07T20:28:39Z	usbmuxd.cloud_check	0
+2026-08-07T20:28:39Z	list.skipped.rsd	rsd
+2026-08-07T20:28:39Z	validate.skipped.rsd	rsd
+2026-08-07T20:28:39Z	sign.v1.start	2026-08-07T20:28:39Z
+2026-08-07T20:28:43Z	sign.v1.exit	0
+2026-08-07T20:28:43Z	sign.v1.profile_expiry	2026-08-14T20:28:42Z
+2026-08-07T20:28:43Z	sign.v1.cert_serial	32BA6B7154E31C45F1963D07A54B19EB
+2026-08-07T20:28:43Z	sign.v1.team_id	A7VT6RU6XK
+2026-08-07T20:28:54Z	rsd-install.exit	0
+2026-08-07T20:28:54Z	rsd-install.profile_expiry	2026-08-14T20:28:47Z
+2026-08-07T20:28:54Z	rsd-install.team_id	A7VT6RU6XK
+2026-08-07T20:28:54Z	verify-v1:exit	skipped
+2026-08-07T20:28:54Z	verify-v1.unavailable	usbmuxd down (VirtualHere link not up)
+2026-08-07T20:28:54Z	documents:exit	skipped
+2026-08-07T20:28:54Z	documents.unavailable	usbmuxd down (VirtualHere link not up)
+2026-08-07T20:28:54Z	upgrade.ipa.v2	/home/ubuntu/git/sidey-server/results/phase-b/rsd-20260807T202839Z/test-v2.ipa
+2026-08-07T20:29:04Z	rsd-upgrade.exit	0
+2026-08-07T20:29:04Z	rsd-upgrade.profile_expiry	2026-08-14T20:28:58Z
+2026-08-07T20:29:04Z	rsd-upgrade.version	null
+2026-08-07T20:29:04Z	verify-v2:exit	skipped
+2026-08-07T20:29:04Z	verify-v2.unavailable	usbmuxd down (VirtualHere link not up)
+2026-08-07T20:29:04Z	apps-final:exit	skipped
+2026-08-07T20:29:04Z	apps-final.unavailable	usbmuxd down (VirtualHere link not up)

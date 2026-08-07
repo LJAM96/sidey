@@ -1,0 +1,15 @@
+signing for 00008120-001E11211184C01E (ios)...
+[2m2026-08-07T20:37:53.969758Z[0m [32m INFO[0m [2misideload::auth::apple_account[0m[2m:[0m Logging in to Apple ID: a***REDACTED@REDACTED
+[2m2026-08-07T20:37:53.970228Z[0m [32m INFO[0m [2misideload::anisette::remote_v3[0m[2m:[0m Loaded existing anisette state
+[2m2026-08-07T20:37:54.220799Z[0m [32m INFO[0m [2misideload::auth::apple_account[0m[2m:[0m Successfully logged in to Apple ID
+[2m2026-08-07T20:37:54.499676Z[0m [32m INFO[0m [2misideload::auth::apple_account[0m[2m:[0m Successfully retrieved app token for com.apple.gs.xcode.auth
+[2m2026-08-07T20:37:55.230396Z[0m [32m INFO[0m [2misideload::dev::devices[0m[2m:[0m Device is a development device
+[2m2026-08-07T20:37:55.230485Z[0m [32m INFO[0m [2misideload::sideload::cert_identity[0m[2m:[0m Using existing private key from storage
+[2m2026-08-07T20:37:55.451783Z[0m [32m INFO[0m [2misideload::sideload::cert_identity[0m[2m:[0m Found matching certificate
+[2m2026-08-07T20:37:55.889120Z[0m [32m INFO[0m [2misideload::sideload::application[0m[2m:[0m Registered app IDs
+[2m2026-08-07T20:37:56.491854Z[0m [32m INFO[0m [2misideload::sideload::sideloader[0m[2m:[0m App IDs configured
+[2m2026-08-07T20:37:56.831479Z[0m [32m INFO[0m [2misideload::sideload::sideloader[0m[2m:[0m Acquired provisioning profile
+[2m2026-08-07T20:37:56.843199Z[0m [32m INFO[0m [2misideload::sideload::sign[0m[2m:[0m Signing PhaseTest.app
+[2m2026-08-07T20:37:56.869532Z[0m [32m INFO[0m [2misideload::sideload::sideloader[0m[2m:[0m App signed!
+{"app_id_count":3,"bundle_identifier":"org.sidey.phasetest.A7VT6RU6XK","cert_serial":"32BA6B7154E31C45F1963D07A54B19EB","device_count":1,"profile_expiry_at":"2026-08-14T20:37:56Z","signed_bundle_identifier":"org.sidey.phasetest.A7VT6RU6XK","signed_ipa_sha256":"1d923ea22ad55b8d2ec3a6794aeb08126860773156ef134847c5792c1b5c4ea7","status":"ok","team_id":"A7VT6RU6XK","version":"1.0.0"}
+signed test IPA: /home/ubuntu/git/sidey-server/results/phase-b/usb-20260807T203750Z/test-v1.ipa

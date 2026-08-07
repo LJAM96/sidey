@@ -1,0 +1,13 @@
+[2m2026-08-07T20:42:55.145127Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m device: udid=00008120-001E11211184C01E connection=Usb
+[2m2026-08-07T20:42:56.834105Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m staged 186883 bytes to PublicStaging/test-v1.ipa
+[2m2026-08-07T20:42:57.549451Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m installing PublicStaging/test-v1.ipa ...
+[2m2026-08-07T20:42:57.920611Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m install progress=20
+[2m2026-08-07T20:42:57.920661Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m install progress=30
+[2m2026-08-07T20:42:57.920669Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m install progress=40
+[2m2026-08-07T20:42:58.432590Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m install progress=50
+[2m2026-08-07T20:42:58.517836Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m install progress=60
+[2m2026-08-07T20:42:58.523045Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m install progress=70
+[2m2026-08-07T20:42:58.603773Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m install progress=80
+[2m2026-08-07T20:42:58.603818Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m install progress=90
+[2m2026-08-07T20:42:58.607609Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m install progress=100
+operation=install result=ok

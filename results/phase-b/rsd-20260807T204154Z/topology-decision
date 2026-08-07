@@ -1,0 +1,9 @@
+Phase B transport proof - D13 topology verdict
+==============================================
+  installed: PASS
+  upgraded:  PASS
+  profile expiry readable: PASS
+  house arrest access:     FAIL
+  pairing validated:       FAIL
+  uninstalled:             PASS
+Decision: direct Oracle-to-device communication is viable; proceed with the device agent on the VPS.

@@ -276,6 +276,7 @@ It already exposes AFC, House Arrest, Installation Proxy, Install Coordination P
 
 The iOS provider should use it for:
 
+Popular list:
 ```text
 Device discovery
 Device information
@@ -285,10 +286,17 @@ Application installation
 Application upgrade
 Application removal
 Provisioning profile inspection
-House Arrest access
+House Arrest access [1]
 Post installation verification
 System logging
 ```
+
+> [1] House Arrest is an Apple-service which iOS refuses on *personal-team*
+> (free account) signed apps: the device answers `InstallationLookupFailed`/
+> `ApplicationLookupFailed` to a `VendDocuments` for such an id. Proven on
+> device 2026-08-07 during the Phase B live runs; recorded in
+> ADR-0006. Container/file delivery for personal-team deployments must use a
+> different route.
 
 The project includes a minimal `ideviceinstaller` style implementation for installing and upgrading applications, which can be used as the first proof rather than writing an installer from scratch.
 
@@ -1008,9 +1016,57 @@ Open issues:
     /var/lib/lockdown)
   - locked phone stalls lockdown exchanges (passcode prompt observed); tests
     with locked/restarted phone still to run
-Remaining Phase B work: signed test IPA (D6 Impactor run) for install /
-upgrade / verify / uninstall / documents; Apple TV via atvloadly + Impactor;
-restart and locked-device scenarios.
+Remaining Phase B work: run the transport proof with a signed test IPA (D6
+Impactor run) for install / upgrade / verify / uninstall / documents; Apple
+TV via atvloadly + Impactor; restart and locked-device scenarios.
+
+Runbook scripts added 2026-08-07 (scripts/phase-b/, run on the VPS where the
+devices are reachable):
+  - sign-test-ipa.sh       D6 signing path: headless signonly binary, outputs
+                           status JSON with profile_expiry_at / cert_serial / team_id
+  - transport-proof.sh     install / upgrade / verify / documents / uninstall
+                           lifecycle over usbmuxd (usb mode) or the RSD tunnel
+                           (rsd mode), writing step logs, compatibility.json
+                           and the topology-decision file per run
+  - atvloadly-proof.sh     Apple TV proof: atvloadly container on the host
+                           Avahi/DBus sockets with a captured transcript
+Both transport-proof.sh and sign-test-ipa.sh pass credentials through the
+sidey-creds.sh pattern (sudo bash -c + env) used by wireless-install.sh.
+
+First live D13 proof run completed 2026-08-07 (rsd mode, phone reachable via
+the tailnet RSD tunnel; VirtualHere USB link was down at the time):
+  - D6 signing path PASS: headless signonly signed a minimal custom test IPA
+    (org.sidey.phasetest) reusing the existing cert identity
+    (serial 32BA6B7154E31C45F1963D07A54B19EB), profile expiry 2026-08-14,
+    app_id_count=3 (free-team App ID slots now fully used for iOS)
+  - rsd-install PASS: wireless binary installed + TERMINAL INSTALL Complete
+  - rsd-upgrade PASS: build-bumped v2 installed over v1 with a fresh profile
+  - provisioning expiry READABLE: profile_expiry_at captured in JSON
+  - D13 verdict: direct Oracle-to-device communication viable; proceed with
+    the device agent on the VPS
+  - verify-v1/v2, house-arrest/documents, apps inventory could NOT run:
+    they need usbmuxd, which was down because the home VirtualHere server
+    was off (vhclient could not reach home-desktop:7575). Re-run in usb mode
+    once the VirtualHere USB-over-tailnet session is back up.
+Report: results/phase-b/rsd-20260807T202839Z/{compatibility.json,tree,
+topology-decision}.
+
+Second D13 proof run completed 2026-08-07 (usb mode + rsd mode, both PASS):
+  - usb-20260807T204031Z: list/validate/info/apps via usbmuxd, install,
+    verify-v1 (profile matches_bundle=true), upgrade v1->v2, verify-v2
+    (version=1.2 build=2), uninstall, apps-final - all PASS; documents
+    (House Arrest) refuses access as expected (see ADR-0006)
+  - rsd-20260807T204410Z: wireless RSD tunnel install + wire-image upgrade
+    PASS; verify/uninstall ran once usbmuxd was back; pairing validated
+  - pairing_validated now derives from rsd-install.exit in rsd mode where the
+    tunnel itself is the pairing proof (validate needs usbmuxd)
+  - install/verify scripts adopt the signed bundle identifier from sign JSON
+    (org.sidey.phasetest -> org.sidey.phasetest.A7VT6RU6XK) for all
+    downstream lookups
+  - D13 verdict: direct Oracle-to-device communication viable; proceed with
+    the device agent on the VPS
+Remaining Phase B: locked/restart scenarios, Apple TV via atvloadly (+ tvOS
+signing, DEVICE_TYPE now supported by signonly).
 ```
 
 ### Exit criteria
@@ -1164,6 +1220,26 @@ The original IPA remains byte identical after signing operations.
 ### Objective
 
 Convert Impactor’s signing functionality into a server worker.
+
+Status 2026-08-07: delivered on the Oracle VPS and verified live. isideload
+gains a headless signonly example (fs-storage, no keyring, refuses cert
+auto-revoke) and `sign_app` returns signing metadata (cert serial, profile
+expiry, team id, signed bundle id). A Go signing-worker container enrols as
+an agent with the signing capability, claims `sign` jobs via the new
+`job_types` claim filter, keeps the isideload state envelope-encrypted on a
+volume (AES-256-GCM, KEK from the apple_credential_key secret) with
+plaintext only in a memory-backed runtime dir while signing, and uploads
+signed derivatives through the control plane's multipart endpoint. The
+control plane records signed artifacts and upserts Apple accounts (by team
+identifier) and certificates (by serial), with a dashboard view of both.
+Jobs expose structured categories (auth, certificate, provisioning,
+entitlement, codesign, network, other). Verified: two live signings of the
+approved SideStore artifact reusing the existing certificate identity
+(serial 32BA6B7154E31C45F1963D07A54B19EB, profile expiry 2026-08-14, team
+A7VT6RU6XK) and all Phase F integration tests. Remaining: automatic re-sign
+when a signed derivative's profile approaches expiry (the scheduler only
+re-issues refresh jobs today), tvOS derivatives, certificate revocation and
+recovery, and retention/cleanup of expired signed derivatives.
 
 ### Work
 
