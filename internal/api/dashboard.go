@@ -86,3 +86,27 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 		       update_policy, current_state, updated_at
 		FROM deployments ORDER BY updated_at DESC LIMIT 200`)
 }
+
+// handleListRefresh exposes the refresh calendar: each deployment's current
+// profile expiry, when the next refresh is due, and the outcome of the last
+// one, alongside the state of its most recent refresh job.
+func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
+	s.queryTable(w, r, `
+		SELECT d.device_name, d.udid, a.name AS agent_name,
+		       ir.provisioning_expiry_at AS profile_expiry_at,
+		       dep.next_refresh_due_at,
+		       dep.last_refresh_at, dep.last_refresh_result, dep.last_refresh_error,
+		       j.state AS refresh_job_state, j.attempt, j.error_category,
+		       j.error_details AS job_error, j.updated_at AS job_updated_at
+		FROM deployments dep
+		JOIN devices d ON d.id = dep.device_id
+		JOIN installation_records ir ON ir.deployment_id = dep.id
+		LEFT JOIN agents a ON a.id = d.agent_id
+		LEFT JOIN LATERAL (
+			SELECT j.state, j.attempt, j.error_category, j.error_details, j.updated_at
+			FROM jobs j
+			WHERE j.device_id = dep.device_id AND j.job_type = 'refresh'
+			ORDER BY j.created_at DESC LIMIT 1
+		) j ON true
+		ORDER BY COALESCE(ir.provisioning_expiry_at, dep.next_refresh_due_at)`)
+}

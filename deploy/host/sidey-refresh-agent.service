@@ -1,0 +1,34 @@
+# Sidey refresh agent: claims refresh jobs from the control plane and
+# executes the wireless-install.sh wrapper (SideStore re-sign + install over
+# the RemotePairing RSD tunnel). Must run as root: the install wrapper
+# sources root-only creds and the tunnel needs a TUN device.
+#
+# The agent is resilient on its own (waits for the API, retries polls), so
+# the unit only needs basic restart-on-failure behaviour.
+[Unit]
+Description=Sidey refresh agent (claims and runs refresh jobs)
+After=network-online.target docker.service sidey-wireless-tunnel.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/sidey/venv-pmd3/bin/python3 /home/ubuntu/git/sidey-server/scripts/refresh-agent.py
+Environment=SIDEY_API_URL=http://127.0.0.1:8080
+Environment=SIDEY_AGENT_STATE_DIR=/var/lib/sidey/refresh-agent
+Environment=SIDEY_POLL_SECONDS=30
+Environment=SIDEY_HEARTBEAT_SECONDS=60
+# Overall per-job deadline: a tunnel that dies mid-transfer hangs the
+# installer (no socket timeouts), so the agent kills the wrapper and fails
+# the job after this; the retry loop then re-queues it.
+Environment=SIDEY_JOB_TIMEOUT=900
+# First start: create an enrolment token via the admin API, then set:
+#   Environment=SIDEY_ENROLMENT_TOKEN=<token>
+# The agent stores the issued API key in /var/lib/sidey/refresh-agent and
+# this var can be removed afterwards.
+Restart=on-failure
+RestartSec=10
+StateDirectory=sidey
+RuntimeDirectory=sidey
+
+[Install]
+WantedBy=multi-user.target

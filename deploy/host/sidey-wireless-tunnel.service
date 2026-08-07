@@ -4,6 +4,8 @@ Documentation=https://github.com/anomalyco/sidey-server
 # The device address is a tailnet IP, so the tunnel needs Tailscale up first.
 After=network-online.target tailscaled.service
 Wants=network-online.target tailscaled.service
+# Retry harder if the phone is offline for a while (e.g. home wifi outage).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -19,8 +21,6 @@ Restart=always
 # Keep retries gentle: the device throttles repeated failed pair-verifies
 # (recovers after a few minutes of quiet).
 RestartSec=60
-# Retry harder if the phone is offline for a while (e.g. home wifi outage).
-StartLimitIntervalSec=0
 RuntimeDirectory=sidey
 RuntimeDirectoryMode=0755
 

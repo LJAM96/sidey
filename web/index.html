@@ -36,6 +36,7 @@
   <section><h2>Jobs</h2><div id="jobs"></div></section>
   <section><h2>Applications</h2><div id="applications"></div></section>
   <section><h2>Deployments</h2><div id="deployments"></div></section>
+  <section><h2>Refresh calendar</h2><div id="refresh"></div></section>
 </main>
 <script>
 const stateClass = s => s === "completed" || s === "ok" || s === "online" || s === "connected" ? "ok"
@@ -66,6 +67,7 @@ async function load() {
     jobs: ["id", "job_type", "state", "attempt", "device_id", "error_category", "created_at"],
     applications: ["name", "publisher", "trust_classification", "created_at"],
     deployments: ["id", "target", "desired_version", "current_state", "updated_at"],
+    refresh: ["device_name", "profile_expiry_at", "next_refresh_due_at", "last_refresh_result", "last_refresh_at", "refresh_job_state", "error_category", "job_updated_at"],
   })) {
     const t = await (await fetch("/api/v1/dashboard/" + id, { headers: { Authorization: "Bearer " + key } })).json();
     const rows = t.rows.map(r => Object.fromEntries(t.columns.map((c, i) => [c, fmt(Object.values(r)[i])])));

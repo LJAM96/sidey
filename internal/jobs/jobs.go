@@ -30,6 +30,17 @@ const (
 	StateFailed     = "failed"
 )
 
+// JobTypeRefresh identifies refresh jobs created by the scheduler (Phase I).
+// The refresh agent claims them, re-signs the app and reports back; the
+// completion hook then reschedules the next refresh from the new expiry.
+const JobTypeRefresh = "refresh"
+
+// refreshProfileValidity is the assumed validity of a freshly issued free-team
+// provisioning profile (7 days). The refresh agent does not report the exact
+// new expiry today, so the completion hook schedules the next refresh from
+// now + this window.
+const refreshProfileValidity = 7 * 24 * time.Hour
+
 // ErrNotClaimed is returned when an agent updates a job it does not hold.
 var ErrNotClaimed = errors.New("job is not claimed by this agent")
 
@@ -83,16 +94,33 @@ type Service struct {
 	lease        time.Duration
 	maxBackoff   time.Duration
 	offlineAfter time.Duration
+	refreshLead  time.Duration
 }
 
-func NewService(pool *pgxpool.Pool, auditClient *audit.Client, lease time.Duration) *Service {
-	return &Service{
+// Option configures the service.
+type Option func(*Service)
+
+// WithRefreshLead sets the lead window used to schedule the next refresh
+// after a completed refresh job (default: 48h before profile expiry).
+func WithRefreshLead(lead time.Duration) Option {
+	return func(s *Service) {
+		s.refreshLead = lead
+	}
+}
+
+func NewService(pool *pgxpool.Pool, auditClient *audit.Client, lease time.Duration, opts ...Option) *Service {
+	s := &Service{
 		pool:         pool,
 		audit:        auditClient,
 		lease:        lease,
 		maxBackoff:   30 * time.Minute,
 		offlineAfter: 2 * time.Minute,
+		refreshLead:  48 * time.Hour,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 const jobColumns = `
@@ -317,7 +345,7 @@ func (s *Service) Update(ctx context.Context, agentID, jobID uuid.UUID, req Upda
 		extraArgs = append(extraArgs, req.Result)
 	}
 	if req.State == StateCompleted {
-		extraSQL += `, completed_at = now()`
+		extraSQL += `, completed_at = now(), error_category = NULL, error_details = NULL`
 	}
 	allArgs := append(args, extraArgs...)
 	allArgs = append(allArgs, jobID)
@@ -334,6 +362,9 @@ func (s *Service) Update(ctx context.Context, agentID, jobID uuid.UUID, req Upda
 	if err != nil {
 		return nil, err
 	}
+	if err := s.applyRefreshOutcome(ctx, tx, &updated, req); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -341,6 +372,57 @@ func (s *Service) Update(ctx context.Context, agentID, jobID uuid.UUID, req Upda
 		audit.WithDevice(updated.DeviceID),
 		audit.WithState(map[string]any{"state": current.State}, map[string]any{"state": updated.State}))
 	return &updated, nil
+}
+
+// applyRefreshOutcome records the outcome of a refresh job on the deployment:
+// a completed refresh moves the next due date forward (new expiry minus the
+// lead window); a failure is recorded for the dashboard. Runs inside the job
+// update transaction so the bookkeeping can never be lost.
+func (s *Service) applyRefreshOutcome(ctx context.Context, tx pgx.Tx, job *Job, req UpdateRequest) error {
+	if job.JobType != JobTypeRefresh || (job.State != StateCompleted && job.State != StateFailed) {
+		return nil
+	}
+	var params struct {
+		DeploymentID *uuid.UUID `json:"deployment_id"`
+	}
+	if err := json.Unmarshal(job.Parameters, &params); err != nil || params.DeploymentID == nil {
+		return fmt.Errorf("refresh job %s: missing deployment_id in parameters", job.ID)
+	}
+	if job.State == StateCompleted {
+		newExpiry := time.Now().Add(refreshProfileValidity)
+		nextDue := newExpiry.Add(-s.refreshLead)
+		if _, err := tx.Exec(ctx, `
+			UPDATE deployments SET
+				next_refresh_due_at = $2,
+				last_refresh_at = now(),
+				last_refresh_result = 'ok',
+				last_refresh_error = NULL
+			WHERE id = $1`, params.DeploymentID, nextDue); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE installation_records SET
+				provisioning_expiry_at = $2,
+				verified_at = now()
+			WHERE deployment_id = $1`, params.DeploymentID, newExpiry); err != nil {
+			return err
+		}
+		return nil
+	}
+	errorDetails := ""
+	if req.ErrorDetails != nil {
+		errorDetails = *req.ErrorDetails
+	}
+	if len(errorDetails) > 2000 {
+		errorDetails = errorDetails[:2000]
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE deployments SET
+			last_refresh_at = now(),
+			last_refresh_result = 'failed',
+			last_refresh_error = $2
+		WHERE id = $1`, params.DeploymentID, errorDetails)
+	return err
 }
 
 func validTransition(from, to string) bool {
@@ -357,9 +439,10 @@ func (s *Service) leaseSeconds() string {
 	return fmt.Sprintf("%d", int(s.lease.Seconds()))
 }
 
-// Reap resets jobs whose lease expired back to pending with a retry delay and
-// marks agents offline when their heartbeat is stale. Called periodically by
-// the scheduler.
+// Reap resets jobs whose lease expired back to pending with a retry delay,
+// re-queues failed refresh jobs (the app must be kept alive, so a refresh
+// retries until it succeeds), and marks agents offline when their heartbeat
+// is stale. Called periodically by the scheduler.
 func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -370,9 +453,10 @@ func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 	rows, err := tx.Query(ctx, `
 		SELECT id, device_id, attempt
 		FROM jobs
-		WHERE state IN ($1, $2) AND lease_expires_at < now()
-		ORDER BY lease_expires_at
-		FOR UPDATE SKIP LOCKED`, StateClaimed, StateInProgress)
+		WHERE (state IN ($1, $2) AND lease_expires_at < now())
+		   OR (state = $3 AND job_type = $4)
+		ORDER BY COALESCE(lease_expires_at, now())
+		FOR UPDATE SKIP LOCKED`, StateClaimed, StateInProgress, StateFailed, JobTypeRefresh)
 	if err != nil {
 		return 0, err
 	}
@@ -412,7 +496,7 @@ func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 		}
 		s.audit.Record(ctx, "scheduler", "job.reclaimed",
 			audit.WithDevice(j.deviceID),
-			audit.WithResult(fmt.Sprintf("lease expired, retry in %ds", retryAfter)))
+			audit.WithResult(fmt.Sprintf("re-queued, retry in %ds", retryAfter)))
 	}
 
 	_, err = tx.Exec(ctx, `

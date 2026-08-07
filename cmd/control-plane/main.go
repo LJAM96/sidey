@@ -15,6 +15,7 @@ import (
 	"sidey/internal/api"
 	"sidey/internal/audit"
 	"sidey/internal/jobs"
+	"sidey/internal/scheduler"
 	"sidey/internal/storage"
 )
 
@@ -47,9 +48,36 @@ func main() {
 	auditClient := audit.New(pool, logger)
 
 	lease := time.Duration(envInt("JOB_LEASE_SECONDS", 120)) * time.Second
-	jobService := jobs.NewService(pool, auditClient, lease)
+	refreshLead := time.Duration(envInt("REFRESH_LEAD_DAYS", 2)*24) * time.Hour
+	jobService := jobs.NewService(pool, auditClient, lease, jobs.WithRefreshLead(refreshLead))
 
 	server := api.NewServer(pool, logger, auditClient, jobService, os.Getenv("SIDEY_ADMIN_API_KEY"))
+
+	// Refresh scheduler: enqueues refresh jobs for deployments whose profile
+	// is within the lead window of expiry.
+	sched := scheduler.NewService(pool, logger, jobService, auditClient, refreshLead)
+	schedInterval := time.Duration(envInt("SCHEDULER_INTERVAL_SECONDS", 300)) * time.Second
+	go func() {
+		runTick := func() {
+			created, err := sched.Run(ctx)
+			if err != nil {
+				logger.Warn("refresh scheduling failed", "error", err)
+				return
+			}
+			if created > 0 {
+				logger.Info("scheduled refresh jobs", "count", created)
+			}
+		}
+		runTick() // one pass immediately at startup
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(schedInterval):
+				runTick()
+			}
+		}
+	}()
 
 	// Lease reaper: resets expired job leases and marks stale agents offline.
 	reapInterval := time.Duration(envInt("REAP_INTERVAL_SECONDS", 15)) * time.Second

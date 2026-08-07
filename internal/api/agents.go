@@ -229,6 +229,11 @@ func (s *Server) handleReportDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	agentID := agentID(r.Context())
 	upserted := 0
+	type reported struct {
+		Udid string `json:"udid"`
+		ID   uuid.UUID `json:"id"`
+	}
+	ids := make([]reported, 0, len(req.Devices))
 	for _, d := range req.Devices {
 		if d.Udid == "" {
 			continue
@@ -241,7 +246,7 @@ func (s *Server) handleReportDevices(w http.ResponseWriter, r *http.Request) {
 		if pairingStatus == "" {
 			pairingStatus = "unknown"
 		}
-		res, err := s.pool.Exec(r.Context(), `
+		res, err := s.pool.Query(r.Context(), `
 			INSERT INTO devices (udid, platform, device_name, model, os_version,
 				agent_id, pairing_status, developer_mode_enabled, last_connected_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
@@ -254,15 +259,26 @@ func (s *Server) handleReportDevices(w http.ResponseWriter, r *http.Request) {
 					THEN $6 ELSE devices.agent_id END,
 				pairing_status = EXCLUDED.pairing_status,
 				developer_mode_enabled = EXCLUDED.developer_mode_enabled,
-				last_connected_at = now()`,
+				last_connected_at = now()
+			RETURNING id`,
 			d.Udid, platform, d.DeviceName, d.Model, d.OsVersion,
 			agentID, pairingStatus, d.DeveloperModeEnabled)
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "device upsert failed")
 			return
 		}
-		upserted += int(res.RowsAffected())
+		var id uuid.UUID
+		if res.Next() {
+			if err := res.Scan(&id); err != nil {
+				res.Close()
+				s.writeError(w, http.StatusInternalServerError, "device upsert failed")
+				return
+			}
+			ids = append(ids, reported{Udid: d.Udid, ID: id})
+		}
+		res.Close()
+		upserted++
 	}
 	s.audit.Record(r.Context(), "agent:"+agentID.String(), "devices.reported")
-	writeJSON(w, http.StatusOK, map[string]any{"reported": len(req.Devices), "upserted": upserted})
+	writeJSON(w, http.StatusOK, map[string]any{"reported": len(req.Devices), "upserted": upserted, "devices": ids})
 }

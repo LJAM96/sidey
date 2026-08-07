@@ -60,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/dashboard/jobs", s.admin(s.handleListJobs))
 	mux.Handle("GET /api/v1/dashboard/applications", s.admin(s.handleListApplications))
 	mux.Handle("GET /api/v1/dashboard/deployments", s.admin(s.handleListDeployments))
+	mux.Handle("GET /api/v1/dashboard/refresh", s.admin(s.handleListRefresh))
 
 	return s.recoverMiddleware(mux)
 }
