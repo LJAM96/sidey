@@ -2,6 +2,9 @@ package api
 
 import (
 	"net/http"
+	"strings"
+
+	"github.com/google/uuid"
 )
 
 type table struct {
@@ -32,8 +35,18 @@ func (s *Server) queryTable(w http.ResponseWriter, r *http.Request, sql string, 
 		}
 		row := make(jsonRow, len(columns))
 		for i, v := range values {
-			if b, ok := v.([]byte); ok {
-				v = string(b)
+			if u, ok := v.(uuid.UUID); ok {
+				v = u.String()
+			} else if b, ok := v.([16]byte); ok {
+				v = uuid.UUID(b).String()
+			} else if b, ok := v.([16]uint8); ok {
+				v = uuid.UUID(b).String()
+			} else if b, ok := v.([]byte); ok {
+				if len(b) == 16 && (columns[i] == "id" || strings.HasSuffix(columns[i], "_id")) {
+					v = uuid.UUID(b).String()
+				} else {
+					v = string(b)
+				}
 			}
 			row[columns[i]] = v
 		}
