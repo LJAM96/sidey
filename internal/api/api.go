@@ -238,6 +238,7 @@ func decodeJSON(r *http.Request, dst any) error {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"admin_key":  s.adminKey,
 		"configured": s.adminKey != "",

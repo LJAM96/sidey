@@ -47,7 +47,6 @@
     font-family: 'JetBrains Mono', monospace;
   }
 
-  /* Header */
   header {
     background: var(--surface);
     border-bottom: 1px solid var(--surface-border);
@@ -140,7 +139,6 @@
   }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
-  /* Main Container */
   main {
     max-width: 1280px;
     margin: 0 auto;
@@ -178,7 +176,6 @@
     align-items: center;
   }
 
-  /* Drag Drop Zone */
   .drop-zone {
     border: 2px dashed var(--surface-border);
     border-radius: var(--radius-md);
@@ -211,7 +208,6 @@
     color: var(--text-muted);
   }
 
-  /* Form Row */
   .form-row {
     margin-top: 14px;
     display: flex;
@@ -230,7 +226,6 @@
   }
   .select-input:focus { border-color: var(--accent); }
 
-  /* Sideload Progress Steps */
   .progress-tracker {
     margin-top: 16px;
     background: var(--surface-elevated);
@@ -262,7 +257,6 @@
   .step-status.done { background: var(--success); color: #000; font-weight: bold; }
   @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
 
-  /* Apple Account Box */
   .account-form {
     display: flex;
     flex-direction: column;
@@ -301,7 +295,6 @@
   .meta-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
   .meta-value { font-size: 13px; font-weight: 600; }
 
-  /* Tables */
   .table-container {
     overflow-x: auto;
     margin-top: 10px;
@@ -327,7 +320,6 @@
   }
   tr:hover td { background: var(--surface-elevated); }
 
-  /* Badges */
   .badge {
     display: inline-block;
     padding: 3px 8px;
@@ -576,10 +568,7 @@
 <script>
 let selectedFile = null;
 let liveDevices = [];
-
-function getApiKey() {
-  return document.getElementById("apiKey").value.trim() || localStorage.getItem("sidey_admin_key") || "";
-}
+let cachedApiKey = "";
 
 function updateBadge(badgeEl, state) {
   if (!badgeEl) return;
@@ -600,27 +589,31 @@ function fmtDate(d) {
   }
 }
 
-// -------------------------------------------------------------
-// Auto-Fetch Config & Key
-// -------------------------------------------------------------
-async function initAuth() {
-  let key = localStorage.getItem("sidey_admin_key");
-  if (!key) {
-    try {
-      const res = await fetch("/api/v1/config");
-      if (res.ok) {
-        const data = await res.json();
-        if (data.admin_key) {
-          key = data.admin_key;
-          localStorage.setItem("sidey_admin_key", key);
-        }
+async function ensureApiKey() {
+  if (cachedApiKey) return cachedApiKey;
+  let stored = localStorage.getItem("sidey_admin_key");
+  if (stored && stored.trim()) {
+    cachedApiKey = stored.trim();
+    const el = document.getElementById("apiKey");
+    if (el) el.value = cachedApiKey;
+    return cachedApiKey;
+  }
+  try {
+    const res = await fetch("/api/v1/config?t=" + Date.now(), { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.admin_key) {
+        cachedApiKey = data.admin_key.trim();
+        localStorage.setItem("sidey_admin_key", cachedApiKey);
+        const el = document.getElementById("apiKey");
+        if (el) el.value = cachedApiKey;
+        return cachedApiKey;
       }
-    } catch(e) {}
+    }
+  } catch(e) {
+    console.error("Config fetch failed:", e);
   }
-  if (key) {
-    document.getElementById("apiKey").value = key;
-  }
-  fetchDashboard();
+  return "";
 }
 
 // -------------------------------------------------------------
@@ -668,7 +661,7 @@ function checkSideloadReady() {
 // Execute Sideload Workflow
 // -------------------------------------------------------------
 sideloadBtn.onclick = async () => {
-  const apiKey = getApiKey();
+  const apiKey = await ensureApiKey();
   if (!apiKey) { alert("Admin API Key is required"); return; }
   if (!selectedFile || !targetDeviceSelect.value) return;
 
@@ -682,9 +675,9 @@ sideloadBtn.onclick = async () => {
   const step3Status = document.getElementById("step3Status");
   const step4Status = document.getElementById("step4Status");
 
-  // Step 1: Upload IPA
   step1Status.className = "step-status active";
   step1Status.textContent = "⏳";
+
   try {
     const uploadRes = await fetch(`/api/v1/artifacts?filename=${encodeURIComponent(selectedFile.name)}`, {
       method: "POST",
@@ -699,7 +692,6 @@ sideloadBtn.onclick = async () => {
     step1Status.className = "step-status done";
     step1Status.textContent = "✓";
 
-    // Step 2 & 3: Deploy (Approve & Queue Sign Job)
     step2Status.className = "step-status active";
     step2Status.textContent = "⏳";
     const deployRes = await fetch("/api/v1/admin/deploy", {
@@ -719,34 +711,32 @@ sideloadBtn.onclick = async () => {
     step2Status.className = "step-status done";
     step2Status.textContent = "✓";
 
-    // Step 3: Track Sign Job
     step3Status.className = "step-status active";
     step3Status.textContent = "⏳";
     const signJobId = deployData.sign_job_id;
 
-    // Poll job status until completed
     const pollSignJob = setInterval(async () => {
       try {
-        const jobsData = await (await fetch("/api/v1/dashboard/jobs", { headers: { "Authorization": `Bearer ${apiKey}` } })).json();
-        const rows = jobsData.rows.map(r => Object.fromEntries(jobsData.columns.map((c, i) => [c, Object.values(r)[i]])));
-        const job = rows.find(j => j.id === signJobId);
-        if (job) {
-          if (job.state === "completed") {
-            clearInterval(pollSignJob);
-            step3Status.className = "step-status done";
-            step3Status.textContent = "✓";
-
-            // Step 4: Device install
-            step4Status.className = "step-status done";
-            step4Status.textContent = "✓";
-            sideloadBtn.disabled = false;
-            fetchDashboard();
-          } else if (job.state === "failed" || job.state === "dead") {
-            clearInterval(pollSignJob);
-            step3Status.className = "step-status";
-            step3Status.textContent = "✗";
-            alert(`Signing failed: ${job.error_details || job.error_category || "error"}`);
-            sideloadBtn.disabled = false;
+        const jobsRes = await fetch("/api/v1/dashboard/jobs", { headers: { "Authorization": `Bearer ${apiKey}` } });
+        if (jobsRes.ok) {
+          const jobsData = await jobsRes.json();
+          const job = jobsData.rows.find(j => j.id === signJobId);
+          if (job) {
+            if (job.state === "completed") {
+              clearInterval(pollSignJob);
+              step3Status.className = "step-status done";
+              step3Status.textContent = "✓";
+              step4Status.className = "step-status done";
+              step4Status.textContent = "✓";
+              sideloadBtn.disabled = false;
+              fetchDashboard();
+            } else if (job.state === "failed" || job.state === "dead") {
+              clearInterval(pollSignJob);
+              step3Status.className = "step-status";
+              step3Status.textContent = "✗";
+              alert(`Signing failed: ${job.error_details || job.error_category || "error"}`);
+              sideloadBtn.disabled = false;
+            }
           }
         }
       } catch(e) {}
@@ -763,7 +753,7 @@ sideloadBtn.onclick = async () => {
 // -------------------------------------------------------------
 document.getElementById("appleAccountForm").onsubmit = async (e) => {
   e.preventDefault();
-  const apiKey = getApiKey();
+  const apiKey = await ensureApiKey();
   if (!apiKey) { alert("Admin API Key missing"); return; }
   const appleId = document.getElementById("appleIdInput").value.trim();
   const applePassword = document.getElementById("applePasswordInput").value.trim();
@@ -779,7 +769,7 @@ document.getElementById("appleAccountForm").onsubmit = async (e) => {
       body: JSON.stringify({ apple_id: appleId, apple_password: applePassword, two_factor_code: twoFactorCode })
     });
     if (!res.ok) throw new Error(await res.text());
-    alert("Apple credentials saved successfully. The signing worker will authenticate on signing requests.");
+    alert("Apple credentials saved. Signing worker will authenticate on signing requests.");
     fetchDashboard();
   } catch (err) {
     alert("Failed to save credentials: " + err.message);
@@ -790,11 +780,15 @@ document.getElementById("appleAccountForm").onsubmit = async (e) => {
 // Live Dashboard Polling
 // -------------------------------------------------------------
 async function fetchDashboard() {
-  const apiKey = getApiKey();
-  if (!apiKey) return;
-
+  const apiKey = await ensureApiKey();
   const connBadge = document.getElementById("connBadge");
   const connText = document.getElementById("connText");
+
+  if (!apiKey) {
+    if (connBadge) connBadge.className = "badge badge-warning";
+    if (connText) connText.textContent = "API Key Required";
+    return;
+  }
 
   try {
     // 1. Devices
@@ -808,18 +802,16 @@ async function fetchDashboard() {
     connText.textContent = "Live " + new Date().toLocaleTimeString();
 
     const devData = await devRes.json();
-    const devRows = devData.rows.map(r => Object.fromEntries(devData.columns.map((c, i) => [c, Object.values(r)[i]])));
+    const devRows = devData.rows || [];
     liveDevices = devRows;
     document.getElementById("deviceCountBadge").textContent = `${devRows.length} Device${devRows.length === 1 ? '' : 's'}`;
 
-    // Populate Target Device Select
     const currentSelected = targetDeviceSelect.value || (devRows.length > 0 ? devRows[0].id : "");
     targetDeviceSelect.innerHTML = devRows.length === 0 ? '<option value="">No connected devices detected</option>' :
       devRows.map(d => `<option value="${d.id}" ${d.id === currentSelected ? 'selected' : ''}>${d.device_name || 'Device'} (${d.model || d.platform}) [${d.platform}]</option>`).join("");
     
     checkSideloadReady();
 
-    // Populate Devices Table
     const devicesList = document.getElementById("devicesList");
     if (devRows.length === 0) {
       devicesList.innerHTML = `<tr><td colspan="7" class="text-muted" style="text-align:center;">No devices detected yet</td></tr>`;
@@ -827,11 +819,11 @@ async function fetchDashboard() {
       devicesList.innerHTML = devRows.map(d => `
         <tr>
           <td><strong>${d.device_name || 'Unnamed Device'}</strong></td>
-          <td><span class="badge badge-neutral">${d.platform}</span></td>
+          <td><span class="badge badge-neutral">${d.platform || 'ios'}</span></td>
           <td>${d.model || '—'}</td>
           <td>${d.os_version || '—'}</td>
-          <td class="mono" style="font-size:11px;">${d.udid}</td>
-          <td><span class="badge ${d.pairing_status === 'paired' ? 'badge-success' : 'badge-warning'}">${d.pairing_status}</span></td>
+          <td class="mono" style="font-size:11px;">${d.udid || '—'}</td>
+          <td><span class="badge ${d.pairing_status === 'paired' ? 'badge-success' : 'badge-warning'}">${d.pairing_status || 'unknown'}</span></td>
           <td>
             <button class="btn btn-sm" onclick="selectDeviceForSideload('${d.id}')">Select Device</button>
           </td>
@@ -843,7 +835,7 @@ async function fetchDashboard() {
     const accRes = await fetch("/api/v1/dashboard/accounts", { headers: { "Authorization": `Bearer ${apiKey}` } });
     if (accRes.ok) {
       const accData = await accRes.json();
-      const accRows = accData.rows.map(r => Object.fromEntries(accData.columns.map((c, i) => [c, Object.values(r)[i]])));
+      const accRows = accData.rows || [];
       if (accRows.length > 0) {
         const acc = accRows[0];
         document.getElementById("accEmail").textContent = acc.label || "—";
@@ -861,7 +853,7 @@ async function fetchDashboard() {
     const jobsRes = await fetch("/api/v1/dashboard/jobs", { headers: { "Authorization": `Bearer ${apiKey}` } });
     if (jobsRes.ok) {
       const jobsData = await jobsRes.json();
-      const jobsRows = jobsData.rows.map(r => Object.fromEntries(jobsData.columns.map((c, i) => [c, Object.values(r)[i]])));
+      const jobsRows = jobsData.rows || [];
       const activeCount = jobsRows.filter(j => j.state === "in_progress" || j.state === "pending" || j.state === "claimed").length;
       document.getElementById("activeJobsBadge").textContent = `${activeCount} Active`;
 
@@ -886,7 +878,7 @@ async function fetchDashboard() {
     const refRes = await fetch("/api/v1/dashboard/refresh", { headers: { "Authorization": `Bearer ${apiKey}` } });
     if (refRes.ok) {
       const refData = await refRes.json();
-      const refRows = refData.rows.map(r => Object.fromEntries(refData.columns.map((c, i) => [c, Object.values(r)[i]])));
+      const refRows = refData.rows || [];
       const refreshList = document.getElementById("refreshList");
       if (refRows.length === 0) {
         refreshList.innerHTML = `<tr><td colspan="6" class="text-muted" style="text-align:center;">No active deployments</td></tr>`;
@@ -908,7 +900,7 @@ async function fetchDashboard() {
     const artRes = await fetch("/api/v1/dashboard/artifacts", { headers: { "Authorization": `Bearer ${apiKey}` } });
     if (artRes.ok) {
       const artData = await artRes.json();
-      const artRows = artData.rows.map(r => Object.fromEntries(artData.columns.map((c, i) => [c, Object.values(r)[i]])));
+      const artRows = artData.rows || [];
       const artifactsList = document.getElementById("artifactsList");
       if (artRows.length === 0) {
         artifactsList.innerHTML = `<tr><td colspan="7" class="text-muted" style="text-align:center;">No artifacts uploaded</td></tr>`;
@@ -929,7 +921,9 @@ async function fetchDashboard() {
       }
     }
 
-  } catch(e) {}
+  } catch(e) {
+    console.error("Dashboard poll error:", e);
+  }
 }
 
 function selectDeviceForSideload(devId) {
@@ -939,7 +933,7 @@ function selectDeviceForSideload(devId) {
 }
 
 async function approveArtifact(artId) {
-  const apiKey = getApiKey();
+  const apiKey = await ensureApiKey();
   if (!apiKey) return;
   await fetch(`/api/v1/artifacts/${artId}`, {
     method: "PATCH",
@@ -954,11 +948,14 @@ async function approveArtifact(artId) {
 
 document.getElementById("saveKeyBtn").onclick = () => {
   const key = document.getElementById("apiKey").value.trim();
-  localStorage.setItem("sidey_admin_key", key);
-  fetchDashboard();
+  if (key) {
+    cachedApiKey = key;
+    localStorage.setItem("sidey_admin_key", key);
+    fetchDashboard();
+  }
 };
 
-initAuth();
+fetchDashboard();
 setInterval(fetchDashboard, 4000);
 </script>
 </body>
