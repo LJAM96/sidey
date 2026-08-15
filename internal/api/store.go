@@ -327,14 +327,13 @@ func (s *Server) handleDeleteStoreSource(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": id})
 }
 
-// handleListStoreApps fetches and returns aggregated, unified apps from all sources.
-func (s *Server) handleListStoreApps(w http.ResponseWriter, r *http.Request) {
+// getStoreApps returns aggregated, unified apps from all sources (cached for 10 minutes).
+func (s *Server) getStoreApps() []StoreApp {
 	globalStoreCache.RLock()
 	if len(globalStoreCache.apps) > 0 && time.Since(globalStoreCache.updatedAt) < 10*time.Minute {
 		cached := globalStoreCache.apps
 		globalStoreCache.RUnlock()
-		writeJSON(w, http.StatusOK, map[string]any{"apps": cached, "cached": true})
-		return
+		return cached
 	}
 	globalStoreCache.RUnlock()
 
@@ -370,7 +369,13 @@ func (s *Server) handleListStoreApps(w http.ResponseWriter, r *http.Request) {
 	globalStoreCache.updatedAt = time.Now()
 	globalStoreCache.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]any{"apps": allApps, "cached": false})
+	return allApps
+}
+
+// handleListStoreApps fetches and returns aggregated, unified apps from all sources.
+func (s *Server) handleListStoreApps(w http.ResponseWriter, r *http.Request) {
+	apps := s.getStoreApps()
+	writeJSON(w, http.StatusOK, map[string]any{"apps": apps})
 }
 
 func normalizeBaseKey(bundleID, name string) string {
@@ -815,11 +820,7 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 
 // handleStoreSourceJSON renders the AltStore / SideStore / LiveContainer compatible repository JSON.
 func (s *Server) handleStoreSourceJSON(w http.ResponseWriter, r *http.Request) {
-	apps, err := s.getCachedStoreApps()
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "failed to load store apps")
-		return
-	}
+	apps := s.getStoreApps()
 
 	host := r.Host
 	proto := "http"
