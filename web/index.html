@@ -125,6 +125,8 @@
   }
   .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
   .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .btn-danger { color: var(--error); }
+  .btn-danger:hover { background: var(--error-bg); border-color: var(--error); }
 
   .live-badge {
     display: inline-flex;
@@ -460,7 +462,10 @@
   <section class="card">
     <div class="card-title">
       <span>Connected Devices Fleet</span>
-      <span id="deviceCountBadge" class="badge badge-neutral">0 Devices</span>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <span id="deviceCountBadge" class="badge badge-neutral">0 Devices</span>
+        <button class="btn btn-sm btn-primary" onclick="openAddDeviceModal()">+ Add Device</button>
+      </div>
     </div>
     <div class="table-container">
       <table id="devicesTable">
@@ -484,8 +489,8 @@
     <div class="guide-box">
       <strong>How to connect a new device:</strong>
       <ul style="margin-left: 18px; margin-top: 6px;">
+        <li><strong>Apple TV (tvOS)</strong>: Click <strong>+ Add Device</strong> above and enter your Apple TV details. The device will be ready for tvOS sideloading over the Tailnet.</li>
         <li><strong>iPhone / iPad (Wireless RSD)</strong>: Ensure device is on the Tailnet (or Wi-Fi), and pair once over USB with: <code>pymobiledevice3 lockdown remotepairing --pair</code>. The <code>sidey-wireless-tunnel</code> service connects automatically.</li>
-        <li><strong>Apple TV (tvOS)</strong>: Ensure Apple TV is powered on and connected to the Tailnet. Sidey discovers it over the network.</li>
       </ul>
     </div>
   </section>
@@ -564,6 +569,45 @@
     </div>
   </section>
 </main>
+
+<!-- Add Device Modal -->
+<div id="addDeviceModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(4px);">
+  <div style="background:var(--surface); border:1px solid var(--surface-border); border-radius:var(--radius-lg); width:100%; max-width:460px; padding:24px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+      <div style="font-size:16px; font-weight:600;">Add / Register Device</div>
+      <button style="background:none; border:none; color:var(--text-muted); font-size:22px; cursor:pointer;" onclick="closeAddDeviceModal()">&times;</button>
+    </div>
+    <form id="addDeviceForm" class="account-form">
+      <div>
+        <label class="input-label">Device Name</label>
+        <input type="text" id="newDevName" class="input-field" placeholder="e.g. Living Room Apple TV" required>
+      </div>
+      <div>
+        <label class="input-label">Platform</label>
+        <select id="newDevPlatform" class="select-input" style="width:100%;">
+          <option value="tvos">tvOS (Apple TV)</option>
+          <option value="ios">iOS (iPhone / iPad)</option>
+        </select>
+      </div>
+      <div>
+        <label class="input-label">Device Model</label>
+        <input type="text" id="newDevModel" class="input-field" placeholder="e.g. Apple TV 4K or iPhone 15 Pro">
+      </div>
+      <div>
+        <label class="input-label">UDID (Device Identifier)</label>
+        <input type="text" id="newDevUdid" class="input-field mono" placeholder="e.g. CA97E7C4-DF76-4CB3-B4FD-79D0CE6B3C8C" required>
+      </div>
+      <div>
+        <label class="input-label">OS Version</label>
+        <input type="text" id="newDevOs" class="input-field" placeholder="e.g. 17.5">
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:10px;">
+        <button type="button" class="btn" onclick="closeAddDeviceModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Register Device</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <script>
 let selectedFile = null;
@@ -777,6 +821,73 @@ document.getElementById("appleAccountForm").onsubmit = async (e) => {
 };
 
 // -------------------------------------------------------------
+// Add Device Modal & Handlers
+// -------------------------------------------------------------
+function openAddDeviceModal() {
+  const modal = document.getElementById("addDeviceModal");
+  modal.style.display = "flex";
+  // Pre-fill with Apple TV defaults if not already registered
+  if (!liveDevices.some(d => d.platform === "tvos")) {
+    document.getElementById("newDevName").value = "Living Room Apple TV";
+    document.getElementById("newDevPlatform").value = "tvos";
+    document.getElementById("newDevModel").value = "Apple TV 4K";
+    document.getElementById("newDevUdid").value = "CA97E7C4-DF76-4CB3-B4FD-79D0CE6B3C8C";
+    document.getElementById("newDevOs").value = "tvOS 17.5";
+  }
+}
+
+function closeAddDeviceModal() {
+  document.getElementById("addDeviceModal").style.display = "none";
+}
+
+document.getElementById("addDeviceForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const apiKey = await ensureApiKey();
+  if (!apiKey) { alert("Admin API key required"); return; }
+  const name = document.getElementById("newDevName").value.trim();
+  const platform = document.getElementById("newDevPlatform").value;
+  const model = document.getElementById("newDevModel").value.trim();
+  const udid = document.getElementById("newDevUdid").value.trim();
+  const os = document.getElementById("newDevOs").value.trim();
+
+  try {
+    const res = await fetch("/api/v1/admin/devices", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        device_name: name,
+        platform: platform,
+        model: model,
+        udid: udid,
+        os_version: os,
+        pairing_status: "paired"
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    closeAddDeviceModal();
+    fetchDashboard();
+  } catch(err) {
+    alert("Failed to add device: " + err.message);
+  }
+};
+
+async function deleteDevice(devId, devName) {
+  if (!confirm(`Are you sure you want to remove device "${devName}"?`)) return;
+  const apiKey = await ensureApiKey();
+  if (!apiKey) return;
+  try {
+    const res = await fetch(`/api/v1/admin/devices/${devId}`, {
+      method: "DELETE",
+      headers: { "Authorization": `Bearer ${apiKey}` }
+    });
+    if (res.ok) fetchDashboard();
+  } catch(e) {}
+}
+
+// -------------------------------------------------------------
 // Live Dashboard Polling
 // -------------------------------------------------------------
 async function fetchDashboard() {
@@ -814,7 +925,7 @@ async function fetchDashboard() {
 
     const devicesList = document.getElementById("devicesList");
     if (devRows.length === 0) {
-      devicesList.innerHTML = `<tr><td colspan="7" class="text-muted" style="text-align:center;">No devices detected yet</td></tr>`;
+      devicesList.innerHTML = `<tr><td colspan="7" class="text-muted" style="text-align:center;">No devices detected yet. Click "+ Add Device" to register one.</td></tr>`;
     } else {
       devicesList.innerHTML = devRows.map(d => `
         <tr>
@@ -825,7 +936,10 @@ async function fetchDashboard() {
           <td class="mono" style="font-size:11px;">${d.udid || '—'}</td>
           <td><span class="badge ${d.pairing_status === 'paired' ? 'badge-success' : 'badge-warning'}">${d.pairing_status || 'unknown'}</span></td>
           <td>
-            <button class="btn btn-sm" onclick="selectDeviceForSideload('${d.id}')">Select Device</button>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn-sm" onclick="selectDeviceForSideload('${d.id}')">Select</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteDevice('${d.id}', '${d.device_name || 'Device'}')">&times;</button>
+            </div>
           </td>
         </tr>
       `).join("");

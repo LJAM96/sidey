@@ -72,6 +72,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("POST /api/v1/admin/apple-accounts/credentials", s.admin(s.handleUpdateAppleCredentials))
 	mux.Handle("POST /api/v1/admin/deploy", s.admin(s.handleAdminDeploy))
+	mux.Handle("POST /api/v1/admin/devices", s.admin(s.handleAdminCreateDevice))
+	mux.Handle("DELETE /api/v1/admin/devices/{id}", s.admin(s.handleAdminDeleteDevice))
 
 	mux.Handle("POST /api/v1/artifacts", s.admin(s.handleUploadArtifact))
 	mux.Handle("PATCH /api/v1/artifacts/{id}", s.admin(s.handleSetArtifactState))
