@@ -273,10 +273,10 @@
     background: var(--bg);
     border: 1px solid var(--surface-border);
     border-radius: var(--radius-sm);
-    padding: 12px 14px;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
     position: relative;
   }
   .account-card-top {
@@ -284,7 +284,7 @@
     justify-content: space-between;
     align-items: center;
   }
-  .account-email { font-weight: 600; font-size: 13px; }
+  .account-email { font-weight: 600; font-size: 14px; }
   .account-meta-line {
     display: flex;
     gap: 14px;
@@ -426,12 +426,12 @@
         <button class="btn btn-sm btn-primary" onclick="openAddAccountModal()">+ Add Account</button>
       </div>
 
-      <div id="accountsList" style="display:flex; flex-direction:column; gap:10px;">
+      <div id="accountsList" style="display:flex; flex-direction:column; gap:12px;">
         <div class="text-muted" style="font-size:13px;">Loading accounts...</div>
       </div>
 
       <div class="guide-box" style="margin-top:14px;">
-        <strong>Bypass 3-App Limit:</strong> Connect multiple free Apple Developer IDs above. Sidey distributes your apps across accounts so you can run 6, 9, or more signed apps simultaneously on the same device!
+        <strong>Bypass 3-App Limit:</strong> Connect multiple free Apple Developer IDs above, or install <strong>LiveContainer</strong> to run unlimited guest apps within a single signed container.
       </div>
     </div>
   </div>
@@ -942,29 +942,47 @@ async function fetchDashboard() {
 
       const currentAccountChoice = targetAccountSelect.value || "auto";
       targetAccountSelect.innerHTML = '<option value="auto">Auto (Choose account with open slots)</option>' +
-        accRows.map(a => `<option value="${a.label}" ${a.label === currentAccountChoice ? 'selected' : ''}>${a.label} (${a.registered_app_id_count || 0}/3 slots used)</option>`).join("");
+        accRows.map(a => {
+          const used = a.registered_app_id_count || 0;
+          const isFull = used >= 3;
+          return `<option value="${a.label}" ${a.label === currentAccountChoice ? 'selected' : ''}>${a.label} — ${used}/3 slots used ${isFull ? '(FULL)' : `(${3-used} free)`}</option>`;
+        }).join("");
 
       const accountsList = document.getElementById("accountsList");
       if (accRows.length === 0) {
         accountsList.innerHTML = `<div class="text-muted" style="font-size:13px;">No Apple Accounts connected yet. Click "+ Add Account" to connect one.</div>`;
       } else {
-        accountsList.innerHTML = accRows.map(a => `
-          <div class="account-card-item">
-            <div class="account-card-top">
-              <span class="account-email">${a.label || '—'}</span>
-              <div style="display:flex; gap:8px; align-items:center;">
-                <span class="badge ${a.auth_state === 'authenticated' ? 'badge-success' : 'badge-warning'}">${a.auth_state || 'unknown'}</span>
-                <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}', '${a.label}')">&times;</button>
+        accountsList.innerHTML = accRows.map(a => {
+          const usedSlots = a.registered_app_id_count || 0;
+          const freeSlots = Math.max(0, 3 - usedSlots);
+          const slotPercent = Math.min(100, Math.round((usedSlots / 3) * 100));
+          const slotColor = usedSlots >= 3 ? "var(--error)" : usedSlots === 2 ? "var(--warning)" : "var(--success)";
+          const badgeClass = usedSlots >= 3 ? "badge-error" : usedSlots === 2 ? "badge-warning" : "badge-success";
+
+          return `
+            <div class="account-card-item">
+              <div class="account-card-top">
+                <span class="account-email">${a.label || '—'}</span>
+                <div style="display:flex; gap:8px; align-items:center;">
+                  <span class="badge ${badgeClass}">${usedSlots}/3 App Slots (${freeSlots} free)</span>
+                  <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}', '${a.label}')">&times;</button>
+                </div>
+              </div>
+
+              <!-- Visual App Slots Meter -->
+              <div style="background:var(--surface-elevated); border-radius:4px; height:6px; width:100%; overflow:hidden; margin: 2px 0;">
+                <div style="background:${slotColor}; height:100%; width:${slotPercent}%; transition:width 0.3s ease;"></div>
+              </div>
+
+              <div class="account-meta-line">
+                <span>Team ID: <strong class="mono">${a.team_identifier || 'Pending'}</strong></span>
+                <span>Devices: <strong>${a.registered_device_count || 0} / 100</strong></span>
+                <span>Certificates: <strong>${a.cert_count || 0} Active</strong></span>
+                <span>Status: <strong class="badge ${a.auth_state === 'authenticated' ? 'badge-success' : 'badge-warning'}" style="font-size:10px; padding:2px 6px;">${a.auth_state || 'unknown'}</strong></span>
               </div>
             </div>
-            <div class="account-meta-line">
-              <span>Team: <strong class="mono">${a.team_identifier || 'Pending'}</strong></span>
-              <span>App Slots: <strong>${a.registered_app_id_count || 0} / 3 used</strong></span>
-              <span>Devices: <strong>${a.registered_device_count || 0} / 100</strong></span>
-              <span>Certificates: <strong>${a.cert_count || 0}</strong></span>
-            </div>
-          </div>
-        `).join("");
+          `;
+        }).join("");
       }
     }
 
