@@ -51,17 +51,15 @@ var terminalErrorCategories = map[string]bool{
 // retired to the dead state. Individual jobs may override via max_attempts.
 const defaultMaxAttempts = 5
 
-// JobTypeRefresh identifies refresh jobs created by the scheduler (Phase I).
-// The refresh agent claims them, re-signs the app and reports back; the
-// completion hook then reschedules the next refresh from the new expiry.
-const JobTypeRefresh = "refresh"
-
-// JobTypeSign identifies sign jobs (Phase F). They are created for an
-// approved artifact + device and claimed by the signing worker, which signs
-// the IPA with the account's certificate identity and uploads the signed
-// derivative. Sign jobs are not tied to a device agent: any worker that
-// declares the signing capability may claim them.
-const JobTypeSign = "sign"
+// Standard JobTypes recognized across Sidey.
+const (
+	JobTypeInstall   = "install"
+	JobTypeVerify    = "verify"
+	JobTypeRefresh   = "refresh"
+	JobTypeSign      = "sign"
+	JobTypeUninstall = "uninstall"
+	JobTypeInventory = "inventory"
+)
 
 // refreshProfileValidity is the assumed validity of a freshly issued free-team
 // provisioning profile (7 days), used when a completed refresh job does not

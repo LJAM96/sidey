@@ -69,8 +69,8 @@ func TestMain(m *testing.M) {
 }
 
 // applyMigrations runs the SQL files in ../../migrations in lexical order
-// against the test database, tracking them in schema_migrations so repeated
-// runs are safe. The real sidey database is never touched.
+// against the test database inside atomic per-file transactions, tracking them
+// in schema_migrations so repeated runs are safe. The real sidey database is never touched.
 func applyMigrations(ctx context.Context, p *pgxpool.Pool) {
 	_, err := p.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations
 		(name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`)
@@ -102,11 +102,20 @@ func applyMigrations(ctx context.Context, p *pgxpool.Pool) {
 		if err != nil {
 			panic(err)
 		}
-		if _, err := p.Exec(ctx, string(sql)); err != nil {
+		tx, err := p.Begin(ctx)
+		if err != nil {
+			panic(err)
+		}
+		if _, err := tx.Exec(ctx, string(sql)); err != nil {
+			_ = tx.Rollback(ctx)
 			panic(fmt.Sprintf("migration %s: %v", entry.Name(), err))
 		}
-		if _, err := p.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO schema_migrations (name) VALUES ($1)`, entry.Name()); err != nil {
+			_ = tx.Rollback(ctx)
+			panic(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
 			panic(err)
 		}
 	}

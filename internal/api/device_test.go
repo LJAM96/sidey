@@ -179,3 +179,24 @@ func TestDeviceServiceSentinelCannotAuthenticateOverHTTP(t *testing.T) {
 		t.Fatalf("sentinel must not authenticate over HTTP, got %d", res.StatusCode)
 	}
 }
+
+func TestDeviceServiceEmptyDeviceReporting(t *testing.T) {
+	truncate(t)
+	res, body := deviceDo(t, "POST", "/api/v1/device/me/devices", map[string]any{
+		"devices": []map[string]any{},
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("empty device reporting failed: %d %v", res.StatusCode, body)
+	}
+	if body["reported"] != float64(0) {
+		t.Fatalf("expected reported = 0, got %v", body["reported"])
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM devices`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 devices in database, got %d", count)
+	}
+}

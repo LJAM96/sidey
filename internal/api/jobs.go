@@ -24,11 +24,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleClaimJobs atomically claims pending jobs for the agent's devices,
-// optionally filtered by job type (the signing worker claims sign jobs).
-// The claim is restricted by the agent's server controlled role: an agent
-// can only claim the job types its enrolment token granted, so a refresh
-// agent can never claim sign jobs and the two privileged global types
-// (sign, refresh) stay bound to their workers.
+// strictly bounded by the agent's server controlled role. An agent can only
+// claim the job types its role authorizes: a refresh agent only gets refresh
+// jobs, a signing worker only gets sign jobs, and device agents only get
+// device-scoped jobs. If the client requests specific job_types, they must
+// all be permitted by the role (or 403 Forbidden is returned); if no job_types
+// are specified, the server automatically defaults to the role's allowed set.
 func (s *Server) handleClaimJobs(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DeviceIDs []uuid.UUID `json:"device_ids"`
@@ -40,14 +41,25 @@ func (s *Server) handleClaimJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := s.agentRole(r, agentID(r.Context()))
-	for _, t := range req.JobTypes {
-		if !roleAllows(role, t) {
-			writeJSON(w, http.StatusForbidden, map[string]any{
-				"error": "agent role " + role + " is not permitted to claim " + t + " jobs"})
-			return
-		}
+	allowed := allowedJobTypesForRole(role)
+	allowedMap := make(map[string]bool, len(allowed))
+	for _, a := range allowed {
+		allowedMap[a] = true
 	}
-	claimed, err := s.jobs.Claim(r.Context(), agentID(r.Context()), req.DeviceIDs, req.JobTypes, req.Limit)
+
+	effectiveJobTypes := allowed
+	if len(req.JobTypes) > 0 {
+		for _, t := range req.JobTypes {
+			if !allowedMap[t] {
+				writeJSON(w, http.StatusForbidden, map[string]any{
+					"error": "agent role " + role + " is not permitted to claim " + t + " jobs"})
+				return
+			}
+		}
+		effectiveJobTypes = req.JobTypes
+	}
+
+	claimed, err := s.jobs.Claim(r.Context(), agentID(r.Context()), req.DeviceIDs, effectiveJobTypes, req.Limit)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "claim failed")
 		return
@@ -55,24 +67,35 @@ func (s *Server) handleClaimJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": claimed})
 }
 
-// roleAllows reports whether the agent role may claim a given job type.
+// allowedJobTypesForRole reports the server-authorized job types for an agent role.
 // sign is the only privileged global type: it is reserved for the signing
 // worker. Every device-scoped role executes on devices it owns, and the
 // device service (ADR-0008) additionally handles refresh, since it replaced
 // the standalone refresh agent in the consolidated model. No device-scoped
 // role ever claims sign.
-func roleAllows(role, jobType string) bool {
+func allowedJobTypesForRole(role string) []string {
 	switch role {
 	case "signing_worker":
-		return jobType == "sign"
+		return []string{jobs.JobTypeSign}
 	case "refresh_agent":
-		return jobType == "refresh"
+		return []string{jobs.JobTypeRefresh}
 	case "device_service":
 		// Same-host socket node or remote node: owns devices, performs
 		// installs, verifies and refreshes. Sign stays with the worker.
-		return jobType != "sign"
+		return []string{
+			jobs.JobTypeInstall,
+			jobs.JobTypeVerify,
+			jobs.JobTypeRefresh,
+			jobs.JobTypeUninstall,
+			jobs.JobTypeInventory,
+		}
 	default: // device_agent, tvos_agent
-		return jobType != "sign" && jobType != "refresh"
+		return []string{
+			jobs.JobTypeInstall,
+			jobs.JobTypeVerify,
+			jobs.JobTypeUninstall,
+			jobs.JobTypeInventory,
+		}
 	}
 }
 

@@ -264,19 +264,93 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 	}
 	defer s.artifacts.DiscardTemp(tmp)
 	if req.SignedIPASha256 != "" && req.SignedIPASha256 != computed {
-		writeJSON(w, http.StatusBadRequest, "signed_ipa_sha256 does not match uploaded file")
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "signed_ipa_sha256 does not match uploaded file"})
 		return
 	}
 	sha256 := computed
 
+	// Independent signed IPA inspection: parse Info.plist and embedded.mobileprovision
+	// directly from the uploaded file rather than trusting agent claims.
+	signedMeta, err := artifacts.InspectSigned(tmp)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "signed IPA validation failed: " + err.Error()})
+		return
+	}
+
+	// Fetch device UDID/platform and source artifact bundle ID/platform for validation.
+	var (
+		deviceUdid     string
+		devicePlatform string
+		sourceBundleID string
+		sourcePlatform string
+	)
+	err = s.pool.QueryRow(r.Context(), `
+		SELECT d.udid, d.platform, a.bundle_identifier, a.platform
+		FROM devices d, artifacts a
+		WHERE d.id = $1 AND a.id = $2`, req.DeviceID, req.SourceArtifactID).
+		Scan(&deviceUdid, &devicePlatform, &sourceBundleID, &sourcePlatform)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "target device or source artifact not found"})
+		return
+	}
+
+	// 1. Validate profile expiry.
+	if !signedMeta.ProfileExpiry.IsZero() && signedMeta.ProfileExpiry.Before(time.Now()) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "embedded provisioning profile is expired"})
+		return
+	}
+
+	// 2. Validate target device UDID in provisioned devices.
+	if !signedMeta.ProvisionsAllDevices && len(signedMeta.ProvisionedDevices) > 0 {
+		deviceFound := false
+		for _, u := range signedMeta.ProvisionedDevices {
+			if strings.EqualFold(u, deviceUdid) {
+				deviceFound = true
+				break
+			}
+		}
+		if !deviceFound {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "target device UDID (" + deviceUdid + ") is not authorized by embedded provisioning profile",
+			})
+			return
+		}
+	}
+
+	// 3. Validate platform compatibility.
+	if signedMeta.DevicePlatform != "" && signedMeta.DevicePlatform != devicePlatform {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "signed IPA platform (" + signedMeta.DevicePlatform + ") does not match device platform (" + devicePlatform + ")",
+		})
+		return
+	}
+
+	// 4. Resolve verified metadata.
+	teamID := req.TeamID
+	if signedMeta.TeamID != "" {
+		teamID = signedMeta.TeamID
+	}
+	signedBundleID := signedMeta.BundleIdentifier
+	if req.SignedBundleIdentifier != "" && req.SignedBundleIdentifier != signedBundleID {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "signed_bundle_identifier does not match Info.plist"})
+		return
+	}
+
 	var profileExpiry *time.Time
-	if req.ProfileExpiryAt != "" {
+	if !signedMeta.ProfileExpiry.IsZero() {
+		profileExpiry = &signedMeta.ProfileExpiry
+	} else if req.ProfileExpiryAt != "" {
 		t, err := time.Parse(time.RFC3339, req.ProfileExpiryAt)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "profile_expiry_at must be RFC3339"})
 			return
 		}
 		profileExpiry = &t
+	}
+
+	profileRef := signedMeta.ProfileUUID
+	if profileRef == "" {
+		profileRef = req.ProvisioningProfileRef
 	}
 
 	tx, err := s.pool.Begin(r.Context())
@@ -318,7 +392,7 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 			registered_device_count = $3,
 			registered_app_id_count = $4
 		RETURNING id`,
-		req.AccountEmail, req.TeamID, req.DeviceCount, req.AppIDCount).Scan(&accountID)
+		req.AccountEmail, teamID, req.DeviceCount, req.AppIDCount).Scan(&accountID)
 	if err != nil {
 		fail(http.StatusInternalServerError, "account upsert failed")
 		return
@@ -351,7 +425,7 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id`,
 		req.SourceArtifactID, req.DeviceID, accountID, certID,
-		nullString(req.ProvisioningProfileRef), req.SignedBundleIdentifier,
+		nullString(profileRef), signedBundleID,
 		profileExpiry, sha256, req.JobID).Scan(&signedID)
 	if err != nil {
 		fail(http.StatusInternalServerError, "signed artifact insert failed")

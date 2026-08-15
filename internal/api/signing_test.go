@@ -13,8 +13,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"sidey/internal/artifacts"
 	"sidey/internal/jobs"
 )
+
+func testSignedIPA(t *testing.T, bundleID, teamID, profileUUID string, expiry time.Time, provisionedDevices []string) []byte {
+	t.Helper()
+	ipa, err := artifacts.BuildSignedIPA(bundleID, "iPhoneOS", teamID, profileUUID, expiry, provisionedDevices)
+	if err != nil {
+		t.Fatalf("BuildSignedIPA: %v", err)
+	}
+	return ipa
+}
 
 // newApprovedArtifact uploads an IPA (with a unique bundle id) and approves
 // it through quarantine.
@@ -316,7 +326,8 @@ func TestSignedArtifactUpload(t *testing.T) {
 		t.Fatalf("mark in_progress: %d %v", res.StatusCode, body)
 	}
 
-	signed := testIPA(t, "com.example.Sign.SIGNED")
+	signed := testSignedIPA(t, "com.example.Sign.SIGNED", "TEAM123", "11111111-2222-3333-4444-555555555555",
+		time.Now().Add(7*24*time.Hour), []string{"00008120-0000000000000104"})
 	sha := sha256.Sum256(signed)
 	sha256hex := hex.EncodeToString(sha[:])
 
@@ -336,7 +347,7 @@ func TestSignedArtifactUpload(t *testing.T) {
 			"account_email":            "signer@example.com",
 			"team_id":                  "TEAM123",
 			"cert_serial":              "DEADBEEF",
-			"profile_expiry_at":        "2026-08-14T15:07:45Z",
+			"profile_expiry_at":        time.Now().Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339),
 			"signed_bundle_identifier": "com.example.Sign.SIGNED",
 			"signed_ipa_sha256":        sha256hex,
 			"device_count":             "1",
@@ -458,7 +469,8 @@ func TestSignedUploadBindingEnforced(t *testing.T) {
 
 	build := func(token string, fields map[string]string) (*http.Response, map[string]any) {
 		t.Helper()
-		signed := testIPA(t, "com.example.Sign.SIGNED")
+		signed := testSignedIPA(t, "com.example.Sign.SIGNED", "TEAM123", "11111111-2222-3333-4444-555555555555",
+			time.Now().Add(7*24*time.Hour), []string{"00008120-0000000000000105"})
 		var form bytes.Buffer
 		w := multipart.NewWriter(&form)
 		fw, err := w.CreateFormFile("ipa", "signed.ipa")
@@ -537,5 +549,133 @@ func TestSignedUploadBindingEnforced(t *testing.T) {
 	resp, _ = build(signKey, valid)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("upload against completed job: %d", resp.StatusCode)
+	}
+}
+
+// TestSignedArtifactIndependentInspection verifies that the control plane
+// inspects the actual signed IPA and rejects expired profiles, missing
+// provisioned devices, or unsigned archives.
+func TestSignedArtifactIndependentInspection(t *testing.T) {
+	truncate(t)
+	_, signKey := enrolAgent(t, "signing-worker-1")
+	// Set role to signing_worker
+	_, err := pool.Exec(t.Context(), `UPDATE agents SET role = 'signing_worker' WHERE name = 'signing-worker-1'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetUDID := "00008120-0000000000000999"
+	deviceID := reportDevice(t, signKey, targetUDID)
+	sourceID, _ := newApprovedArtifact(t)
+
+	res, body := doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
+		"artifact_id": sourceID.String(), "device_id": deviceID.String(),
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create sign job: %d %v", res.StatusCode, body)
+	}
+	jobID, _ := uuid.Parse(body["id"].(string))
+
+	// Claim with empty job_types: signing_worker automatically receives sign jobs
+	res, body = doJSON(t, "POST", "/api/v1/jobs/claim", signKey, map[string]any{"limit": 1})
+	if res.StatusCode != http.StatusOK || len(body["jobs"].([]any)) != 1 {
+		t.Fatalf("claim sign job: %d %v", res.StatusCode, body)
+	}
+	res, body = doJSON(t, "POST", "/api/v1/jobs/"+jobID.String()+"/status", signKey, map[string]any{
+		"state": "in_progress",
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("mark in_progress: %d %v", res.StatusCode, body)
+	}
+
+	uploadCustomIPA := func(ipaBytes []byte) (*http.Response, map[string]any) {
+		var form bytes.Buffer
+		w := multipart.NewWriter(&form)
+		fw, _ := w.CreateFormFile("ipa", "signed.ipa")
+		fw.Write(ipaBytes)
+		w.WriteField("job_id", jobID.String())
+		w.WriteField("source_artifact_id", sourceID.String())
+		w.WriteField("device_id", deviceID.String())
+		w.Close()
+
+		req, _ := http.NewRequest("POST", httpServer.URL+"/api/v1/signed-artifacts", &form)
+		req.Header.Set("Content-Type", w.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+signKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var parsed map[string]any
+		json.NewDecoder(resp.Body).Decode(&parsed)
+		return resp, parsed
+	}
+
+	// 1. Upload without embedded.mobileprovision is rejected.
+	unsignedIPA := testIPA(t, "com.example.unsigned")
+	resp, parsed := uploadCustomIPA(unsignedIPA)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unsigned IPA should be rejected: %d %v", resp.StatusCode, parsed)
+	}
+
+	// 2. Upload with expired provisioning profile is rejected.
+	expiredIPA := testSignedIPA(t, "com.example.expired", "TEAM123", "UUID-EXPIRED",
+		time.Now().Add(-24*time.Hour), []string{targetUDID})
+	resp, parsed = uploadCustomIPA(expiredIPA)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expired profile IPA should be rejected: %d %v", resp.StatusCode, parsed)
+	}
+
+	// 3. Upload where target device UDID is absent from provisioned devices is rejected.
+	wrongDeviceIPA := testSignedIPA(t, "com.example.wrongdevice", "TEAM123", "UUID-DEV",
+		time.Now().Add(7*24*time.Hour), []string{"00008120-OTHER-DEVICE"})
+	resp, parsed = uploadCustomIPA(wrongDeviceIPA)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("device not in provisioning profile should be rejected: %d %v", resp.StatusCode, parsed)
+	}
+}
+
+// TestRoleDerivedJobTypesClaim verifies that empty job_types is strictly bounded
+// by the server-side role and cannot bypass role restrictions.
+func TestRoleDerivedJobTypesClaim(t *testing.T) {
+	truncate(t)
+	_, refreshKey := enrolAgent(t, "refresh-agent-1")
+	_, err := pool.Exec(t.Context(), `UPDATE agents SET role = 'refresh_agent' WHERE name = 'refresh-agent-1'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deviceID := reportDevice(t, refreshKey, "00008120-0000000000000108")
+	sourceID, _ := newApprovedArtifact(t)
+
+	// Create an install job and a sign job on this device
+	res, _ := doJSON(t, "POST", "/api/v1/jobs", adminKey, map[string]any{
+		"job_type": "install", "device_id": deviceID.String(), "application_id": sourceID.String(),
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create install job: %d", res.StatusCode)
+	}
+	res, _ = doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
+		"artifact_id": sourceID.String(), "device_id": deviceID.String(),
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create sign job: %d", res.StatusCode)
+	}
+
+	// Refresh agent claiming with empty job_types: receives 0 jobs because only refresh jobs are allowed for its role
+	res, body := doJSON(t, "POST", "/api/v1/jobs/claim", refreshKey, map[string]any{"limit": 10})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("claim: %d %v", res.StatusCode, body)
+	}
+	if len(body["jobs"].([]any)) != 0 {
+		t.Fatalf("refresh agent claimed unauthorized jobs: %v", body["jobs"])
+	}
+
+	// Refresh agent explicitly requesting install jobs: gets 403 Forbidden
+	res, body = doJSON(t, "POST", "/api/v1/jobs/claim", refreshKey, map[string]any{
+		"job_types": []string{"install"}, "limit": 1,
+	})
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("refresh agent claiming install should be 403: %d %v", res.StatusCode, body)
 	}
 }

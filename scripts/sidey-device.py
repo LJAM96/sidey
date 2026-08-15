@@ -360,12 +360,6 @@ def build_inventory(cp):
             "udid": TVOS_UDID, "platform": "tvos", "device_name": TVOS_NAME,
             "model": "Apple TV", "os_version": "", "pairing_status": "paired",
         })
-    if not devices:
-        devices.append({
-            "udid": DEVICE_UDID or "unknown", "platform": "ios",
-            "device_name": DEVICE_NAME, "model": "", "os_version": "",
-            "pairing_status": "unknown",
-        })
     return cp.report_devices(devices)
 
 

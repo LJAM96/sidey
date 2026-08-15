@@ -188,23 +188,24 @@ func main() {
 	}
 }
 
-// listenDeviceSocket prepares the Unix socket directory (0700), removes any
-// stale socket file from a previous run, and serves the device handler. The
-// socket file itself is created by the OS with the process umask; the
-// directory mode is what excludes other local users.
+// listenDeviceSocket prepares the Unix socket directory (0770), removes any
+// stale socket file from a previous run, serves the device handler, and ensures
+// socket file permissions (0660) allow communication within group sidey.
 func listenDeviceSocket(socketPath string, server *api.Server) (*http.Server, error) {
 	if socketPath == "" {
 		return nil, nil
 	}
 	dir := filepath.Dir(socketPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
+	if err := os.MkdirAll(dir, 0o770); err != nil {
+		return nil, fmt.Errorf("creating socket directory %s: %w", dir, err)
 	}
+	_ = os.Chmod(dir, 0o770)
 	_ = os.Remove(socketPath)
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listening on unix socket %s: %w", socketPath, err)
 	}
+	_ = os.Chmod(socketPath, 0o660)
 	deviceServer := &http.Server{
 		Handler:           server.DeviceHandler(),
 		ReadHeaderTimeout: 10 * time.Second,

@@ -4,8 +4,8 @@
 # keys or enrolment tokens.
 #
 # Must run as root: the wireless/tvOS install wrappers need root for the TUN
-# device and RSD tunnels, and the control-plane socket in /run/sidey is
-# root-owned.
+# device and RSD tunnels, and membership in group sidey (0770) to share the
+# control-plane socket in /run/sidey.
 #
 # The daemon waits for the control plane itself and retries polls, so the
 # unit needs only basic restart-on-failure behaviour.
@@ -31,11 +31,12 @@ Environment=SIDEY_HEARTBEAT_SECONDS=60
 Environment=SIDEY_JOB_TIMEOUT=1200
 Restart=on-failure
 RestartSec=10
-UMask=0077
+Group=sidey
+UMask=0007
 StateDirectory=sidey
-StateDirectoryMode=0700
+StateDirectoryMode=0770
 RuntimeDirectory=sidey
-RuntimeDirectoryMode=0700
+RuntimeDirectoryMode=0770
 
 [Install]
 WantedBy=multi-user.target

@@ -46,8 +46,7 @@ services:
             echo "skipping $$name (already applied)"
           else
             echo "applying $$name"
-            psql -v ON_ERROR_STOP=1 -f "$$f"
-            psql -v ON_ERROR_STOP=1 -c "INSERT INTO schema_migrations (name) VALUES ('$$name')"
+            psql -v ON_ERROR_STOP=1 -1 -c "\i $$f" -c "INSERT INTO schema_migrations (name) VALUES ('$$name')"
           fi
         done
         echo "migrations complete"
@@ -58,6 +57,7 @@ services:
       context: ..
       dockerfile: packaging/docker/control-plane/Dockerfile
     restart: unless-stopped
+    user: "10001:10001"
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -70,7 +70,7 @@ services:
       ARTIFACT_DIR: /var/lib/sidey/artifacts
       # ADR-0008: the same-host device service talks to the control plane over
       # a filesystem-permission-protected Unix socket in /run/sidey instead of
-      # bearer keys. /run/sidey is 0700 root on both host and container.
+      # bearer keys. /run/sidey is 0770 (root:sidey, GID 10001) on host and container.
       SIDEY_DEVICE_SOCKET: /run/sidey/device.sock
     volumes:
       - sidey-artifacts:/var/lib/sidey/artifacts
