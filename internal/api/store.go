@@ -729,6 +729,13 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// LiveContainer itself must always be signed natively with Apple developer cert
+	if strings.Contains(strings.ToLower(req.Name), "livecontainer") ||
+		strings.Contains(strings.ToLower(req.DownloadURL), "livecontainer") ||
+		meta.BundleIdentifier == "com.kdt.livecontainer" {
+		req.Mode = "native"
+	}
+
 	// 5. Route to LiveContainer or Native Deploy
 	if req.Mode == "livecontainer" {
 		var udid, deviceName, platform string

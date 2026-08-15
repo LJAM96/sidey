@@ -74,6 +74,7 @@ services:
       SIDEY_DEVICE_SOCKET: /run/sidey/device.sock
     volumes:
       - sidey-artifacts:/var/lib/sidey/artifacts
+      - sidey-signing-state:/var/lib/sidey/signing-worker
       - /run/sidey:/run/sidey
     secrets:
       - session_signing_key
@@ -109,6 +110,7 @@ services:
       SIDEY_2FA_CODE_FILE: /2fa/2fa-code.txt
     volumes:
       - sidey-signing-state:/var/lib/sidey/signing-worker
+      - /run/sidey:/run/sidey
       - /var/lib/sidey/2fa:/2fa
     # Memory-backed runtime dir: signonly decrypts the isideload private key
     # and anisette state here while a signing job runs. tmpfs means plaintext
