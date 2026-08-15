@@ -14,7 +14,7 @@
 # pair-verify/install run as an unprivileged user.
 #
 # Usage:
-#   tvos-install.sh path/to/app.ipa
+#   tvos-install.sh path/to/app.ipa [--refresh]
 #
 # Env: SIDEY_APPLE_ID (plumesign session), DEVICE_UDID (TV UDID),
 #      DEVICE_IDENTIFIER (RemotePairing record identifier, optional =
@@ -33,6 +33,13 @@ DEVICE_PORT="${DEVICE_PORT:-49152}"
 SIDEY_APPLE_ID="${SIDEY_APPLE_ID:?set SIDEY_APPLE_ID (plumesign session account)}"
 WORK_DIR="${SIDEY_TVOS_DATA_DIR:-/var/lib/sidey/tvs}"
 RSD_ENDPOINT_FILE="${RSD_ENDPOINT_FILE:-$WORK_DIR/tvs-endpoint}"
+
+REFRESH=0
+case "${2:-}" in
+    --refresh | "") : ;;
+    *) echo "usage: tvos-install.sh path/to/app.ipa [--refresh]" >&2; exit 2 ;;
+esac
+[ "${2:-}" = "--refresh" ] && REFRESH=1
 
 IPA_PATH="${1:?usage: tvos-install.sh path/to/app.ipa}"
 [ -f "$IPA_PATH" ] || { echo "IPA not found: $IPA_PATH" >&2; exit 1; }
@@ -73,51 +80,20 @@ plumesign sign --apple-id --udid "$DEVICE_UDID" -u "$SIDEY_APPLE_ID" \
     -p "$IO_DIR/patched.ipa" -o "$IO_DIR/signed.ipa" \
     --output-provision "$IO_DIR/embedded.mobileprovision"
 
-# 3. Ensure the tunnel is up (systemd unit preferred, same as
-#    wireless-install.sh).
-TUNNEL_UNIT=sidey-tvos-tunnel.service
-if systemctl list-unit-files 2>/dev/null | grep -q "$TUNNEL_UNIT"; then
-    if ! systemctl is-active --quiet "$TUNNEL_UNIT"; then
-        echo "Waiting for $TUNNEL_UNIT to come up..."
-        systemctl start "$TUNNEL_UNIT" 2>/dev/null || true
-        for _ in $(seq 1 60); do
-            systemctl is-active --quiet "$TUNNEL_UNIT" && break
-            sleep 5
-        done
-    fi
-    systemctl is-active --quiet "$TUNNEL_UNIT" || { echo "Tunnel unit not active; check 'systemctl status $TUNNEL_UNIT'" >&2; exit 1; }
-elif ! pgrep -f tvos-tunnel.py >/dev/null; then
-    echo "Starting tvOS tunnel to $DEVICE_IP (RemotePairing daemon)..."
-    setsid nohup sudo "$VENV_PY" "$SCRIPT_DIR/tvos-tunnel.py" \
-        --udid "$DEVICE_IDENTIFIER" --address "$DEVICE_IP" \
-        --port "$DEVICE_PORT" \
-        --endpoint-file "$RSD_ENDPOINT_FILE" > /var/log/sidey-tvos-tunnel.log 2>&1 &
-fi
+# 3. Ensure the tunnel is up and wait for a live RSD listener.
+# shellcheck source=scripts/tvos-lib.sh
+. "$SCRIPT_DIR/tvos-lib.sh"
+tvos_tunnel_ensure
+tvos_tunnel_wait
 
-# Wait for a live RSD listener at the endpoint.
-RSD_ADDR=""; RSD_PORT=""
-for _ in $(seq 1 30); do
-    if [ -s "$RSD_ENDPOINT_FILE" ]; then
-        read -r RSD_ADDR RSD_PORT < "$RSD_ENDPOINT_FILE" || true
-    fi
-    if [ -n "${RSD_ADDR:-}" ] && [ -n "${RSD_PORT:-}" ] \
-        && "$VENV_PY" -c "import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 2)" "$RSD_ADDR" "$RSD_PORT" 2>/dev/null; then
-        break
-    fi
-    RSD_ADDR=""; RSD_PORT=""
-    sleep 1
-done
-if [ -z "${RSD_ADDR:-}" ]; then
-    echo "Tunnel did not come up; check 'systemctl status $TUNNEL_UNIT'" >&2
-    exit 1
-fi
-echo "RSD tunnel: $RSD_ADDR:$RSD_PORT"
-
-# 4. Install over the tunnel (unprivileged).
+# 4. Install (or upgrade/refresh) over the tunnel (unprivileged).
+REFRESH_ARGS=()
+[ "$REFRESH" = 1 ] && REFRESH_ARGS+=(--refresh)
 "$VENV_PY" "$SCRIPT_DIR/tvos-install.py" \
     --ipa "$IO_DIR/signed.ipa" \
     --bundle-identifier "$BUNDLE_ID" \
-    --endpoint-file "$RSD_ENDPOINT_FILE"
+    --endpoint-file "$RSD_ENDPOINT_FILE" \
+    "${REFRESH_ARGS[@]}"
 
 # Machine-readable result lines for the Go helper to record centrally.
 echo "SIDEY_BUNDLE_ID=$BUNDLE_ID"

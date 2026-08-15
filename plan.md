@@ -1333,11 +1333,23 @@ deploy request (the TV's identifier differs from its UDID). Verified: helper
 builds and vets (go 1.25, oi-3), Rust provider builds/clippy-clean, and the
 delegated deploy saves the install record centrally.
 
+Status 2026-08-15 (second pass): uninstall and refresh are now wired through
+the same delegated path. `delegatedDeploy` appends `--refresh` to
+`tvos-install.sh` when the request sets it, selecting the InstallationProxy
+`Upgrade` command (scripts/tvos-install.py `--refresh`) for an existing
+install; `opUninstall` now also removes the app on the device via
+`scripts/tvos-uninstall.sh`/`tvos-uninstall.py` (pmd3 `uninstall` + get_apps
+"GONE"/"STILL PRESENT" check) over the shared RSD tunnel before the central
+record is deleted. The tunnel bring-up/wait logic moved into
+`scripts/tvos-lib.sh`, sourced by both orchestrators. Verified: helper builds
+and vets clean, and a stub-script run shows the delegated uninstall receives
+bundle id, IP and identifier.
+
 Remaining: plumesign `sign-rsd` parity for the install step (only if we ever
-want to drop the pmd3 dependency), uninstall/upgrade over the tunnel wiring,
-the discovery (mDNS/Avahi) wiring into the device records, the refresh cycle
-(Phase I) driven through the same `tvos-install.sh --refresh` path, and
-end-to-end regression of `tvos-install.sh` against the TV on the VPS.
+want to drop the pmd3 dependency), the discovery (mDNS/Avahi) wiring into
+the device records, the refresh cycle (Phase I) driven from the control plane
+through the same `tvos-install.sh --refresh` path, and end-to-end regression
+of `tvos-install.sh` against the TV on the VPS.
 
 ### Work
 

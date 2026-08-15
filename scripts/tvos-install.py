@@ -32,6 +32,7 @@ async def main():
     parser.add_argument("--ipa", required=True, help="signed IPA to install")
     parser.add_argument("--bundle-identifier", required=True, help="bundle id of the IPA (for post-install verify)")
     parser.add_argument("--endpoint-file", default="/run/sidey/tvs-endpoint", help="RSD endpoint file written by tvos-tunnel.py")
+    parser.add_argument("--refresh", action="store_true", help="upgrade an existing install (Upgrade command) instead of Install")
     args = parser.parse_args()
 
     with open(args.endpoint_file) as f:
@@ -48,8 +49,12 @@ async def main():
     def prog(p, s, **kw):
         print(f"{p}% {s}", flush=True)
 
-    await proxy.install_from_local(Path(args.ipa), handler=prog)
-    print("INSTALL COMPLETE", flush=True)
+    if args.refresh:
+        await proxy.upgrade(Path(args.ipa), handler=prog)
+        print("REFRESH COMPLETE", flush=True)
+    else:
+        await proxy.install_from_local(Path(args.ipa), handler=prog)
+        print("INSTALL COMPLETE", flush=True)
 
     # Verify the bundle is present on the device.
     apps = await proxy.get_apps(bundle_identifiers=[args.bundle_identifier])

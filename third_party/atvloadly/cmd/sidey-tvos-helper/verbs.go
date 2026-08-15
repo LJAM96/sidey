@@ -383,7 +383,11 @@ func delegatedDeploy(req request, udid, ipaPath, account string, refresh bool) r
 		identifier = udid
 	}
 
-	cmd := exec.Command("bash", script, ipaPath)
+	args := []string{script, ipaPath}
+	if refresh {
+		args = append(args, "--refresh")
+	}
+	cmd := exec.Command("bash", args...)
 	cmd.Dir = dataDir
 	cmd.Env = append(os.Environ(),
 		"DEVICE_UDID="+udid,
@@ -463,6 +467,44 @@ func delegatedDeploy(req request, udid, ipaPath, account string, refresh bool) r
 	}}
 }
 
+// delegatedUninstall removes an app on the Apple TV itself over the RSD
+// tunnel via scripts/tvos-uninstall.sh (mirror of the proven deploy path).
+// The central install record is removed by the caller regardless.
+func delegatedUninstall(req request, udid, bundleID string) response {
+	script := filepath.Join(scriptsDir, "tvos-uninstall.sh")
+	if _, err := os.Stat(script); err != nil {
+		return response{OK: false, Error: "SIDEY_TVOS_SCRIPTS_DIR set but tvos-uninstall.sh missing: " + script, ErrorStage: "installation"}
+	}
+
+	identifier := req.str("identifier")
+	if identifier == "" {
+		identifier = udid
+	}
+
+	cmd := exec.Command("bash", script, bundleID)
+	cmd.Dir = dataDir
+	cmd.Env = append(os.Environ(),
+		"DEVICE_UDID="+udid,
+		"DEVICE_IDENTIFIER="+identifier,
+		"DEVICE_IP="+req.str("ip"),
+		"DEVICE_PORT="+fmt.Sprintf("%d", req.int("port")),
+		"SIDEY_TVOS_DATA_DIR="+dataDir,
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	output := out.String()
+
+	if err != nil {
+		return response{OK: false, Error: output + " " + err.Error(), ErrorStage: "installation", PlumesignStderr: output}
+	}
+	if strings.Contains(output, "STILL PRESENT") {
+		return response{OK: false, Error: output, ErrorStage: "installation", PlumesignStderr: output}
+	}
+	return response{OK: true, Result: map[string]any{"bundle_identifier": bundleID, "output": output}}
+}
+
 // opVerify re-checks post-install state: the recorded install must exist.
 func opVerify(req request) response {
 	udid := req.str("udid")
@@ -535,12 +577,23 @@ func opInventory(req request) response {
 // opUninstall removes the recorded app entry (the fork's plumesign path has
 // no uninstall verb; the record removal lets the control plane drop the
 // inventory row).
+//
+// When a scripts dir is configured this also removes the app on the device
+// itself over the RSD tunnel (scripts/tvos-uninstall.sh), mirroring the
+// proven deploy path; the central install record is removed either way.
 func opUninstall(req request) response {
 	udid := req.str("udid")
 	bundleID := req.str("bundle_identifier")
 	if udid == "" || bundleID == "" {
 		return response{OK: false, Error: "udid and bundle_identifier required", ErrorStage: "protocol"}
 	}
+
+	if scriptsDir != "" {
+		if resp := delegatedUninstall(req, udid, bundleID); !resp.OK {
+			return resp
+		}
+	}
+
 	apps, err := service.GetAppList()
 	if err != nil {
 		return response{OK: false, Error: err.Error(), ErrorStage: "installation"}
