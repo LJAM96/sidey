@@ -48,6 +48,75 @@ func testIPAPlatform(t *testing.T, bundleID, sdkPlatform string) []byte {
 	return buf.Bytes()
 }
 
+// testSignedIPA builds a minimal valid signed IPA containing both Info.plist
+// and embedded.mobileprovision for signing tests.
+func testSignedIPA(t *testing.T, bundleID, teamID, profileUUID string, expiry time.Time, provisionedDevices []string) []byte {
+	t.Helper()
+	return testSignedIPAPlatform(t, bundleID, "iPhoneOS", teamID, profileUUID, expiry, provisionedDevices)
+}
+
+// testSignedIPAPlatform builds a signed IPA declaring the given Apple SDK platform.
+func testSignedIPAPlatform(t *testing.T, bundleID, sdkPlatform, teamID, profileUUID string, expiry time.Time, provisionedDevices []string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	plist := `<?xml version="1.0"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>` + bundleID + `</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>MinimumOSVersion</key><string>14.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>` + sdkPlatform + `</string></array>
+</dict></plist>`
+
+	var devList string
+	for _, udid := range provisionedDevices {
+		devList += "    <string>" + udid + "</string>\n"
+	}
+
+	expiryStr := expiry.UTC().Format(time.RFC3339)
+	profileXml := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>AppIDName</key><string>Sidey App</string>
+  <key>Name</key><string>Sidey Development Profile</string>
+  <key>UUID</key><string>` + profileUUID + `</string>
+  <key>TeamName</key><string>Sidey Team</string>
+  <key>TeamIdentifier</key><array><string>` + teamID + `</string></array>
+  <key>ExpirationDate</key><date>` + expiryStr + `</date>
+  <key>ProvisionedDevices</key><array>
+` + devList + `  </array>
+  <key>Entitlements</key><dict>
+    <key>application-identifier</key><string>` + teamID + "." + bundleID + `</string>
+    <key>get-task-allow</key><true/>
+  </dict>
+</dict>
+</plist>`
+
+	fakePKCS7 := append([]byte("PKCS7-HEADER-DER-BYTES\x00\x01\x02"), []byte(profileXml)...)
+	fakePKCS7 = append(fakePKCS7, []byte("\x00\x00-SIG-FOOTER")...)
+
+	for name, content := range map[string][]byte{
+		"Payload/Test.app/Info.plist":               []byte(plist),
+		"Payload/Test.app/embedded.mobileprovision": fakePKCS7,
+		"Payload/Test.app/Test":                     []byte("binary"),
+	} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func uploadIPA(t *testing.T, data []byte) (*http.Response, map[string]any) {
 	t.Helper()
 	req, err := http.NewRequest("POST",

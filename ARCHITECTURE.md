@@ -131,7 +131,7 @@ Device service core responsibilities that are provider independent: job executio
 2. Remote node (optional): the operator creates a one time enrolment token in the dashboard; the remote node presents it to the control plane API over Tailscale and receives device service credentials, then reports capability state on an ongoing basis.
 3. Jobs are claimed with idempotency keys and a per device lock. PostgreSQL is both the system of record and the job queue (D5); Redis is not used.
 
-Deployment wiring: the control plane container binds `/run/sidey` (mode 0770, group sidey) and listens on `SIDEY_DEVICE_SOCKET` (`/run/sidey/device.sock`, mode 0660); the device service runs as a systemd unit (`deploy/host/sidey-device.service`, group sidey) executing `scripts/sidey-device.py`, which claims intents over the socket — same-host mode uses no credentials, remote-node mode switches to the agent API with `SIDEY_API_URL`/`SIDEY_ENROLMENT_TOKEN`.
+Deployment wiring: host setup provisions group `sidey` with fixed GID 10001 (`groupadd --gid 10001 sidey`); the control plane container binds `/run/sidey` (mode 0770, group sidey / GID 10001) and listens on `SIDEY_DEVICE_SOCKET` (`/run/sidey/device.sock`, mode 0660); the device service runs as a systemd unit (`deploy/host/sidey-device.service`, group sidey) executing `scripts/sidey-device.py`, which claims intents over the socket — same-host mode uses no credentials, remote-node mode switches to the agent API with `SIDEY_API_URL`/`SIDEY_ENROLMENT_TOKEN`.
 
 ### 6.2 Refresh with update check
 

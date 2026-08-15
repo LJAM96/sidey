@@ -10,9 +10,9 @@ import (
 
 func TestInspectSignedValid(t *testing.T) {
 	expiry := time.Now().Add(7 * 24 * time.Hour).Truncate(time.Second)
-	data, err := BuildSignedIPA("com.example.signedapp", "iPhoneOS", "TEAM12345", "11111111-2222-3333-4444-555555555555", expiry, []string{"00008120-0000000000000001", "00008120-0000000000000002"})
+	data, err := buildSignedIPA("com.example.signedapp", "iPhoneOS", "TEAM12345", "11111111-2222-3333-4444-555555555555", expiry, []string{"00008120-0000000000000001", "00008120-0000000000000002"})
 	if err != nil {
-		t.Fatalf("BuildSignedIPA: %v", err)
+		t.Fatalf("buildSignedIPA: %v", err)
 	}
 
 	tmp := filepath.Join(t.TempDir(), "signed.ipa")
@@ -63,6 +63,74 @@ func TestInspectSignedRejectsMissingProvision(t *testing.T) {
 }
 
 func testIPABytes(bundleID, sdkPlatform string) []byte {
-	ipa, _ := BuildSignedIPA(bundleID, sdkPlatform, "T", "U", time.Now(), nil)
+	ipa, _ := buildSignedIPA(bundleID, sdkPlatform, "T", "U", time.Now(), nil)
 	return ipa
+}
+
+// buildSignedIPA generates a test signed IPA containing both Info.plist and
+// embedded.mobileprovision for testing.
+func buildSignedIPA(bundleID, sdkPlatform, teamID, profileUUID string, expiry time.Time, provisionedDevices []string) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	infoPlist := `<?xml version="1.0"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>` + bundleID + `</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>MinimumOSVersion</key><string>14.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>` + sdkPlatform + `</string></array>
+</dict></plist>`
+
+	var devList string
+	for _, udid := range provisionedDevices {
+		devList += "    <string>" + udid + "</string>\n"
+	}
+
+	expiryStr := expiry.UTC().Format(time.RFC3339)
+	profileXml := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>AppIDName</key><string>Sidey App</string>
+  <key>Name</key><string>Sidey Development Profile</string>
+  <key>UUID</key><string>` + profileUUID + `</string>
+  <key>TeamName</key><string>Sidey Team</string>
+  <key>TeamIdentifier</key><array><string>` + teamID + `</string></array>
+  <key>ExpirationDate</key><date>` + expiryStr + `</date>
+  <key>ProvisionedDevices</key><array>
+` + devList + `  </array>
+  <key>Entitlements</key><dict>
+    <key>application-identifier</key><string>` + teamID + "." + bundleID + `</string>
+    <key>get-task-allow</key><true/>
+  </dict>
+</dict>
+</plist>`
+
+	// Wrap profile with dummy PKCS#7 envelope prefix and suffix
+	fakePKCS7 := append([]byte("PKCS7-HEADER-DER-BYTES\x00\x01\x02"), []byte(profileXml)...)
+	fakePKCS7 = append(fakePKCS7, []byte("\x00\x00-SIG-FOOTER")...)
+
+	appDir := "Payload/Test.app"
+	files := map[string][]byte{
+		path.Join(appDir, "Info.plist"):               []byte(infoPlist),
+		path.Join(appDir, "embedded.mobileprovision"): fakePKCS7,
+		path.Join(appDir, "Test"):                     []byte("executable-binary-bytes"),
+	}
+
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := w.Write(content); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"sidey/internal/artifacts"
 	"sidey/internal/audit"
 	"sidey/internal/jobs"
 )
@@ -294,63 +296,86 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// 1. Validate profile expiry.
-	if !signedMeta.ProfileExpiry.IsZero() && signedMeta.ProfileExpiry.Before(time.Now()) {
+	// 1. Authoritative profile fields (fail closed).
+	if signedMeta.TeamID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "embedded provisioning profile lacks TeamIdentifier"})
+		return
+	}
+	if req.TeamID != "" && req.TeamID != signedMeta.TeamID {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "team_id does not match embedded provisioning profile"})
+		return
+	}
+	teamID := signedMeta.TeamID
+
+	if signedMeta.ProfileExpiry.IsZero() {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "embedded provisioning profile lacks ExpirationDate"})
+		return
+	}
+	if signedMeta.ProfileExpiry.Before(time.Now()) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "embedded provisioning profile is expired"})
 		return
 	}
+	profileExpiry := &signedMeta.ProfileExpiry
 
-	// 2. Validate target device UDID in provisioned devices.
-	if !signedMeta.ProvisionsAllDevices && len(signedMeta.ProvisionedDevices) > 0 {
-		deviceFound := false
-		for _, u := range signedMeta.ProvisionedDevices {
-			if strings.EqualFold(u, deviceUdid) {
-				deviceFound = true
-				break
-			}
-		}
-		if !deviceFound {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "target device UDID (" + deviceUdid + ") is not authorized by embedded provisioning profile",
-			})
-			return
-		}
+	if signedMeta.AppIdentifier == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "embedded provisioning profile lacks application-identifier entitlement"})
+		return
+	}
+	profileRef := signedMeta.ProfileUUID
+	if profileRef == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "embedded provisioning profile lacks UUID"})
+		return
 	}
 
-	// 3. Validate platform compatibility.
-	if signedMeta.DevicePlatform != "" && signedMeta.DevicePlatform != devicePlatform {
+	// 2. Validate target device UDID in provisioned devices (fail closed for personal/dev profiles).
+	if signedMeta.ProvisionsAllDevices {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "wildcard/enterprise profile (ProvisionsAllDevices) not permitted for personal signing"})
+		return
+	}
+	if len(signedMeta.ProvisionedDevices) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "embedded provisioning profile contains no ProvisionedDevices"})
+		return
+	}
+	deviceFound := false
+	for _, u := range signedMeta.ProvisionedDevices {
+		if strings.EqualFold(u, deviceUdid) {
+			deviceFound = true
+			break
+		}
+	}
+	if !deviceFound {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "signed IPA platform (" + signedMeta.DevicePlatform + ") does not match device platform (" + devicePlatform + ")",
+			"error": "target device UDID (" + deviceUdid + ") is not authorized by embedded provisioning profile",
 		})
 		return
 	}
 
-	// 4. Resolve verified metadata.
-	teamID := req.TeamID
-	if signedMeta.TeamID != "" {
-		teamID = signedMeta.TeamID
+	// 3. Validate platform compatibility against device and source artifact.
+	if signedMeta.DevicePlatform != devicePlatform || (sourcePlatform != "" && signedMeta.DevicePlatform != sourcePlatform) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "signed IPA platform (" + signedMeta.DevicePlatform + ") does not match target device (" + devicePlatform + ") or source artifact (" + sourcePlatform + ")",
+		})
+		return
 	}
+
+	// 4. Validate source bundle identifier relationship and app identifier entitlement.
 	signedBundleID := signedMeta.BundleIdentifier
+	if !isValidSignedBundleID(sourceBundleID, signedBundleID) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "signed bundle identifier (" + signedBundleID + ") is not a valid derivative of source bundle (" + sourceBundleID + ")",
+		})
+		return
+	}
 	if req.SignedBundleIdentifier != "" && req.SignedBundleIdentifier != signedBundleID {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "signed_bundle_identifier does not match Info.plist"})
 		return
 	}
-
-	var profileExpiry *time.Time
-	if !signedMeta.ProfileExpiry.IsZero() {
-		profileExpiry = &signedMeta.ProfileExpiry
-	} else if req.ProfileExpiryAt != "" {
-		t, err := time.Parse(time.RFC3339, req.ProfileExpiryAt)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "profile_expiry_at must be RFC3339"})
-			return
-		}
-		profileExpiry = &t
-	}
-
-	profileRef := signedMeta.ProfileUUID
-	if profileRef == "" {
-		profileRef = req.ProvisioningProfileRef
+	expectedAppID := teamID + "." + signedBundleID
+	if signedMeta.AppIdentifier != expectedAppID && signedMeta.AppIdentifier != teamID+".*" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "embedded profile application-identifier (" + signedMeta.AppIdentifier + ") does not match signed bundle (" + expectedAppID + ")",
+		})
+		return
 	}
 
 	tx, err := s.pool.Begin(r.Context())
@@ -524,4 +549,20 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN certificates c ON c.account_id = a.id AND NOT c.revoked
 		GROUP BY a.id
 		ORDER BY a.created_at`)
+}
+
+// isValidSignedBundleID verifies that a signed IPA's bundle identifier is a
+// legitimate derivative of the source artifact's bundle identifier (exact match
+// or with a valid signer suffix like <source>.<random/team-suffix>).
+func isValidSignedBundleID(source, signed string) bool {
+	if source == "" || signed == "" {
+		return false
+	}
+	if source == signed {
+		return true
+	}
+	if strings.HasPrefix(signed, source+".") {
+		return true
+	}
+	return false
 }

@@ -13,24 +13,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"sidey/internal/artifacts"
 	"sidey/internal/jobs"
 )
 
-func testSignedIPA(t *testing.T, bundleID, teamID, profileUUID string, expiry time.Time, provisionedDevices []string) []byte {
-	t.Helper()
-	ipa, err := artifacts.BuildSignedIPA(bundleID, "iPhoneOS", teamID, profileUUID, expiry, provisionedDevices)
-	if err != nil {
-		t.Fatalf("BuildSignedIPA: %v", err)
-	}
-	return ipa
-}
-
+// newApprovedArtifact uploads an IPA (with a unique bundle id) and approves
 // newApprovedArtifact uploads an IPA (with a unique bundle id) and approves
 // it through quarantine.
 func newApprovedArtifact(t *testing.T) (uuid.UUID, string) {
 	t.Helper()
-	ipa := testIPA(t, fmt.Sprintf("com.example.Sign.%d", time.Now().UnixNano()))
+	return newApprovedArtifactWithBundle(t, fmt.Sprintf("com.example.Sign.%d", time.Now().UnixNano()))
+}
+
+func newApprovedArtifactWithBundle(t *testing.T, bundleID string) (uuid.UUID, string) {
+	t.Helper()
+	ipa := testIPA(t, bundleID)
 	res, body := uploadIPA(t, ipa)
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("upload: %d %v", res.StatusCode, body)
@@ -299,7 +295,7 @@ func TestSignedArtifactUpload(t *testing.T) {
 	truncate(t)
 	_, apiKey := enrolAgent(t, "signing-1")
 	deviceID := reportDevice(t, apiKey, "00008120-0000000000000104")
-	sourceID, _ := newApprovedArtifact(t)
+	sourceID, _ := newApprovedArtifactWithBundle(t, "com.example.Sign")
 
 	res, body := doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
 		"artifact_id": sourceID.String(), "device_id": deviceID.String(),
@@ -445,7 +441,7 @@ func TestSignedUploadBindingEnforced(t *testing.T) {
 	_, signKey := enrolAgent(t, "signing-1")
 	_, otherKey := enrolAgent(t, "other-agent")
 	deviceID := reportDevice(t, signKey, "00008120-0000000000000105")
-	sourceID, _ := newApprovedArtifact(t)
+	sourceID, _ := newApprovedArtifactWithBundle(t, "com.example.Sign")
 
 	res, body := doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
 		"artifact_id": sourceID.String(), "device_id": deviceID.String(),
@@ -530,7 +526,7 @@ func TestSignedUploadBindingEnforced(t *testing.T) {
 	}
 
 	// A job referencing a different source artifact is refused.
-	otherSource, _ := newApprovedArtifact(t)
+	otherSource, _ := newApprovedArtifactWithBundle(t, "com.example.Other")
 	resp, _ = build(signKey, map[string]string{
 		"job_id": jobID.String(), "source_artifact_id": otherSource.String(),
 		"device_id": deviceID.String(),
@@ -566,7 +562,7 @@ func TestSignedArtifactIndependentInspection(t *testing.T) {
 
 	targetUDID := "00008120-0000000000000999"
 	deviceID := reportDevice(t, signKey, targetUDID)
-	sourceID, _ := newApprovedArtifact(t)
+	sourceID, _ := newApprovedArtifactWithBundle(t, "com.example.inspect")
 
 	res, body := doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
 		"artifact_id": sourceID.String(), "device_id": deviceID.String(),
@@ -612,14 +608,14 @@ func TestSignedArtifactIndependentInspection(t *testing.T) {
 	}
 
 	// 1. Upload without embedded.mobileprovision is rejected.
-	unsignedIPA := testIPA(t, "com.example.unsigned")
+	unsignedIPA := testIPA(t, "com.example.inspect")
 	resp, parsed := uploadCustomIPA(unsignedIPA)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unsigned IPA should be rejected: %d %v", resp.StatusCode, parsed)
 	}
 
 	// 2. Upload with expired provisioning profile is rejected.
-	expiredIPA := testSignedIPA(t, "com.example.expired", "TEAM123", "UUID-EXPIRED",
+	expiredIPA := testSignedIPA(t, "com.example.inspect.signed", "TEAM123", "UUID-EXPIRED",
 		time.Now().Add(-24*time.Hour), []string{targetUDID})
 	resp, parsed = uploadCustomIPA(expiredIPA)
 	if resp.StatusCode != http.StatusBadRequest {
@@ -627,11 +623,27 @@ func TestSignedArtifactIndependentInspection(t *testing.T) {
 	}
 
 	// 3. Upload where target device UDID is absent from provisioned devices is rejected.
-	wrongDeviceIPA := testSignedIPA(t, "com.example.wrongdevice", "TEAM123", "UUID-DEV",
+	wrongDeviceIPA := testSignedIPA(t, "com.example.inspect.signed", "TEAM123", "UUID-DEV",
 		time.Now().Add(7*24*time.Hour), []string{"00008120-OTHER-DEVICE"})
 	resp, parsed = uploadCustomIPA(wrongDeviceIPA)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("device not in provisioning profile should be rejected: %d %v", resp.StatusCode, parsed)
+	}
+
+	// 4. Upload with unrelated bundle ID is rejected.
+	unrelatedIPA := testSignedIPA(t, "com.unrelated.app", "TEAM123", "UUID-DEV",
+		time.Now().Add(7*24*time.Hour), []string{targetUDID})
+	resp, parsed = uploadCustomIPA(unrelatedIPA)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unrelated bundle IPA should be rejected: %d %v", resp.StatusCode, parsed)
+	}
+
+	// 5. Valid signed IPA derivative is accepted.
+	validSignedIPA := testSignedIPA(t, "com.example.inspect.signed", "TEAM123", "UUID-VALID",
+		time.Now().Add(7*24*time.Hour), []string{targetUDID})
+	resp, parsed = uploadCustomIPA(validSignedIPA)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("valid signed IPA should be accepted: %d %v", resp.StatusCode, parsed)
 	}
 }
 
