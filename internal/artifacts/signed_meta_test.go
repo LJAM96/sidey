@@ -1,8 +1,11 @@
 package artifacts
 
 import (
+	"archive/zip"
+	"bytes"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"testing"
 	"time"
