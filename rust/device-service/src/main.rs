@@ -4,7 +4,7 @@ use std::net::TcpListener;
 fn main() {
     let port = std::env::var("PORT").unwrap_or_else(|_| "8091".into());
     let listener = TcpListener::bind(("0.0.0.0", port.parse().unwrap())).expect("bind failed");
-    eprintln!("device-agent placeholder listening on {port}");
+    eprintln!("device-service placeholder listening on {port}");
     for stream in listener.incoming() {
         let mut s = match stream {
             Ok(s) => s,

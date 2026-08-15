@@ -30,9 +30,9 @@ LiveContainer guest application delivery
 
 Docker deployment on Oracle Cloud, NAS hardware and ordinary Linux servers
 
-Tailscale connectivity between the central server and local device agents
+Tailscale connectivity between the central server and devices
 
-The platform should not depend on SideStore being installed on the phone. The intended installation path is an external paired device agent using Apple device services, with SideStore retained only as an optional compatibility mode.
+The platform should not depend on SideStore being installed on the phone. The intended installation path is an external device service using Apple device services, with SideStore retained only as an optional compatibility mode.
 
 atvloadly already provides a Docker based Apple TV web service with pairing, multiple Apple Account support and automatic application refreshing. Impactor already performs Apple authentication, device registration, certificate creation, provisioning, signing and installation for iOS, iPadOS and tvOS. The `idevice` Rust library already implements pairing, AFC, House Arrest, provisioning profile management and Installation Proxy operations. These projects provide most of the difficult low level functionality required for the platform.
 
@@ -40,9 +40,9 @@ atvloadly already provides a Docker based Apple TV web service with pairing, mul
 
 Recorded 2026-08-06. These decisions constrain the phases below and are replayed into the Phase A architecture decision records.
 
-### D1: Device agent composition
+### D1: Device service composition
 
-The device agent is a single Rust process. The iOS provider is native Rust using `idevice`. The tvOS provider is implemented behind the `DeviceProvider` trait as a wrapper around an atvloadly derived Go helper process. The provider trait is the only boundary the agent core knows; a future Rust port of the tvOS provider can replace the helper without changing the agent core.
+The device service is a single Rust process. The iOS provider is native Rust using `idevice`. The tvOS provider is implemented behind the `DeviceProvider` trait as a wrapper around an atvloadly derived Go helper process. The provider trait is the only boundary the device service core knows; a future Rust port of the tvOS provider can replace the helper without changing the device service core.
 
 ### D2: Control plane and web UI are our own
 
@@ -90,9 +90,11 @@ Adopted 2026-08-06. The platform supports enrolling more than one Apple account 
 
 ### D13: Oracle VPS is the only always-on host
 
-Adopted 2026-08-06. There is no edge host at home; the Oracle VPS is the only always-on machine. The VPS runs the control plane and the device agent together. The agent reaches devices over Tailscale: the phone must carry the Tailscale app (or the home network must have a Tailscale subnet router). This is the plan's experimental "direct Oracle to device communication" topology; Phase B transport proof must validate it (locked device, restarts, refresh reliability). A home edge host remains the fallback if the proof fails.
+Adopted 2026-08-06, updated 2026-08-15 (ADR-0008). There is no edge host at home; the Oracle VPS is the only always-on machine and runs the control plane, signing worker and device service together. This "direct Oracle to device communication" topology is the default and was validated by the Phase B transport proof (wireless install, tunnel, locked device and restart reliability). The device service reaches devices over Tailscale: the phone must carry the Tailscale app (or the home network must have a Tailscale subnet router).
 
-Pairing is bootstrapped once through a USB-over-network session: the user runs a VirtualHere (or usbip) server on any machine where the phone is physically plugged in, and the VPS agent's usbmuxd sees the virtual USB port (VirtualHere traffic stays inside Tailscale; VirtualHere is proprietary, usbip is the open alternative). The pairing record then lands in the agent vault directly. Fallback: pair locally, export the record, import it into the agent vault (pairing records are host independent once created). USB re-pairing always requires physical access to some local machine, so the pairing record vault must be backed up (Phase N).
+Pairing is bootstrapped once through a USB-over-network session: the user runs a VirtualHere (or usbip) server on any machine where the phone is physically plugged in, and the VPS device service's usbmuxd sees the virtual USB port (VirtualHere traffic stays inside Tailscale; VirtualHere is proprietary, usbip is the open alternative). The pairing record then lands in the device service vault directly. Fallback: pair locally, export the record, import it into the device service vault (pairing records are host independent once created). USB re-pairing always requires physical access to some local machine, so the pairing record vault must be backed up (Phase N).
+
+An optional remote-node mode deploys the same device service on a second host over the tailnet for multi-site installs; it is not required and is not the default.
 
 ## Product boundaries
 
@@ -130,10 +132,10 @@ Free Apple development provisioning remains limited to short lived profiles and 
 
 ## Production topology
 
-The recommended production design separates the Internet facing control plane from a local device agent.
+The default deployment is fully VPS hosted (D13, ADR-0008): the Internet facing control plane and the device service that owns device communication run on the same Oracle VPS.
 
 ```text
-Oracle VPS
+Oracle VPS (default)
 │
 ├── Web interface
 ├── Control API
@@ -145,33 +147,27 @@ Oracle VPS
 ├── Artifact storage
 ├── Notification service
 ├── Backup service
+├── Device service
+│   ├── iOS and iPadOS provider
+│   ├── tvOS provider
+│   ├── Pairing record vault
+│   ├── usbmuxd integration
+│   └── Avahi and mDNS integration
 └── Tailscale
         │
-        │ Encrypted tailnet connection
+        │ Tailscale connection to devices (USB only during initial pairing)
         ▼
-Local edge host
-│
-├── Device agent
-├── iOS and iPadOS provider
-├── tvOS provider
-├── Pairing record vault
-├── usbmuxd integration
-├── Avahi and mDNS integration
-└── Tailscale
-        │
-        │ Local Apple device services
-        ▼
-Devices
-├── iPhone
-├── iPad
-└── Apple TV
+    Devices
+    ├── iPhone
+    ├── iPad
+    └── Apple TV
 ```
 
-The local edge host could be your UGREEN NAS, a Raspberry Pi, a small Linux computer or an always on Mac.
+The control plane, signing worker and device service are separate processes on the same host (D1, ADR-0003, ADR-0008). The control plane talks to the device service over a localhost Unix socket; the signing worker talks only to the control plane and never sees devices or pairing records.
 
-This is preferable to placing all device communication directly on Oracle because Apple TV discovery relies on local network pairing and Avahi, while persistent wireless iPhone communication requires validated pairing and working local Apple device services. atvloadly currently requires Avahi on the host and mounts the host DBus and Avahi sockets into its container. `idevice_pair` also states that network pairing requires both systems to be on the same network, and that iOS 27 network onboarding records are retained only in memory for that session.
+Direct Oracle to device communication became the default after the Phase B transport proof validated the D13 topology on a locked phone with restarts, and Phase G proved Apple TV over the tailnet (RemotePairing PIN, RSD tunnel and tvOS-family installs from the VPS, plan "Phase B/G proof"). atvloadly requires Avahi and mounts the host DBus and Avahi sockets into its container; those privileges are isolated to the device service container, never the control plane.
 
-Direct Oracle to device communication through Tailscale should remain an experimental topology until it has passed the transport proof phase.
+An optional remote-node mode deploys the device service on a second host (UGREEN NAS, Raspberry Pi, small Linux computer or always on Mac) connected over the tailnet for multi-site installs. It is not required and is not the default.
 
 ## Development topology
 
@@ -181,7 +177,7 @@ Development workstation
 ├── Control plane containers
 ├── PostgreSQL
 ├── Signing worker
-├── Device agent
+├── Device service
 ├── Test artifact storage
 └── USB connected test device
 ```
@@ -209,7 +205,7 @@ signing-worker
 ├── Entitlement processing
 └── IPA signing
 
-device-agent
+device-service
 ├── Device discovery
 ├── Pairing validation
 ├── iOS provider
@@ -226,7 +222,7 @@ artifact-store
 └── Original and signed IPA files
 ```
 
-The signing worker and device agent should remain separate processes because they handle different sensitive materials and require different operating system permissions.
+The signing worker and device service should remain separate processes because they handle different sensitive materials and require different operating system permissions.
 
 # Open source reuse strategy
 
@@ -244,7 +240,7 @@ DeviceProvider
 └── IOSProvider
 ```
 
-Its current Docker configuration should not simply be copied unchanged. It uses a legacy Compose declaration, an unconfined seccomp profile and direct mounts of DBus and Avahi sockets. Those privileges should be isolated to the local edge agent rather than granted to the central Oracle control plane.
+Its current Docker configuration should not simply be copied unchanged. It uses a legacy Compose declaration, an unconfined seccomp profile and direct mounts of DBus and Avahi sockets. Those privileges should be isolated to the device service container rather than granted to the control plane.
 
 ## Impactor
 
@@ -306,7 +302,7 @@ The project includes a minimal `ideviceinstaller` style implementation for insta
 
 It supports USB and WiFi device discovery, Lockdown and remote pairing records, validation, wireless debugging and writing pairing files directly into application Documents directories. It is cross platform and MIT licensed.
 
-Its GUI may initially remain a separate setup utility. The underlying pairing logic can later be moved into the edge agent.
+Its GUI may initially remain a separate setup utility. The underlying pairing logic can later be moved into the device service.
 
 For persistent iPhone operation, Lockdown pairing created through usbmuxd should be preferred. The newer iOS 27 network onboarding flow should be treated as a convenience feature because the current tool documents that the resulting network pairing is retained only while the application remains open.
 
@@ -336,7 +332,7 @@ SideStore should be treated as a reference implementation and optional compatibi
 
 Its source remains valuable for understanding Apple authentication, provisioning, App ID management, profile renewal and on device installation. SideStore combines a sandboxed iOS application, Minimuxer and a loopback VPN mechanism to make the device communicate with a simulated local developer host.
 
-The platform should avoid depending on this path because the external device agent can communicate with actual Apple services from outside the iOS sandbox.
+The platform should avoid depending on this path because the external device service can communicate with actual Apple services from outside the iOS sandbox.
 
 ## sidestore-vpn
 
@@ -369,11 +365,11 @@ deploy/
 └── scripts/
 ```
 
-`compose.yaml` defines the common application model.
+`compose.yaml` defines the common application model. The default VPS deployment includes the device service; whether it lives in the base model or a `compose.device.yaml` overlay is finalised in Phase D (ADR-0008).
 
 `compose.oracle.yaml` adds the Internet facing control plane, storage, scheduler and Tailscale connectivity.
 
-`compose.edge.yaml` adds the local device agent, Avahi access, usbmuxd access and pairing vault.
+`compose.edge.yaml` adds the optional remote-node device service (device services on a second host), Avahi access, usbmuxd access and pairing vault. It is not used in the default VPS installation.
 
 `compose.compatibility.yaml` adds `sidestore-vpn` and `anisette-v3-server`.
 
@@ -398,14 +394,16 @@ The GitHub watcher, scheduler and notifier should initially run inside `control-
 
 IPA inspection, quarantine and repository management also run inside `control-plane` for the first release; a separate artifact worker is introduced only when workload justifies it (decision D9).
 
-## Initial edge services
+## Initial device services
+
+The default VPS deployment runs the device service next to the control plane (D13, ADR-0008):
 
 ```text
-device-agent
+device-service
 tailscale
 ```
 
-The edge agent may require host access to:
+The device service may require host access to:
 
 ```text
 /var/run/usbmuxd
@@ -413,7 +411,11 @@ The edge agent may require host access to:
 /var/run/avahi-daemon
 ```
 
-Only the edge host should receive those mounts.
+Only the device service container (whether on the VPS or an optional remote node) should receive those mounts.
+
+In the default same-VPS mode the device service talks to the control plane over a localhost Unix socket; the remote-node overlay adds the same container on a second host over the tailnet.
+
+Wiring: the control plane container mounts `/run/sidey` (0700) and listens on `SIDEY_DEVICE_SOCKET=/run/sidey/device.sock` (`deploy/compose.yaml`); the device service runs out-of-container as a systemd unit (`deploy/host/sidey-device.service`, `scripts/sidey-device.py`) that claims intents over the socket with no credentials. Same-host mode needs no node record; remote nodes enrol with a token and are recorded (Mode: remote node).
 
 For tvOS discovery, host networking may be preferable to routed bridge networking. This should be selected after testing rather than assumed.
 
@@ -478,7 +480,7 @@ The API must be healthy before the gateway accepts traffic.
 
 The signer must report both process health and Apple service readiness separately.
 
-The device agent must distinguish between healthy process state and device availability.
+The device service must distinguish between healthy process state and device availability.
 
 Compose health checks and dependency conditions should be used rather than fixed sleep timers.
 
@@ -513,14 +515,14 @@ Release notes
 
 Stores identity, role, authentication state and security settings.
 
-## Agent
+## Device service node
 
-Represents a device communication node.
+Represents a device service performing device communication. The default VPS deployment runs one device service next to the control plane; being local to the control plane it needs no recorded node, and the same-host link is trusted by construction (Unix socket, ADR-0008). An optional remote node on another host is recorded here so connection state, last heartbeat and capabilities are visible.
 
 Fields include:
 
 ```text
-Agent ID
+Device service node ID
 Name
 Architecture
 Operating system
@@ -529,6 +531,7 @@ Tailnet identity
 Connection state
 Last heartbeat
 Capabilities
+Mode (same-host | remote node)
 ```
 
 ## Device
@@ -543,7 +546,7 @@ Platform
 Device name
 Model
 Operating system version
-Agent assignment
+Device service node assignment
 Pairing status
 Developer mode state
 Last successful connection
@@ -901,7 +904,7 @@ Establish technical and licensing boundaries before writing production code.
 
 ### Work
 
-Create architecture decision records covering the control plane language, signing worker boundary, device agent boundary, storage model and provider interface.
+Create architecture decision records covering the control plane language, signing worker boundary, device service boundary, storage model and provider interface.
 
 Replay the recorded decisions (D1 to D10) into the architecture decision records.
 
@@ -979,7 +982,7 @@ Test a USB connected iPhone first.
 
 Enable wireless debugging and test the same operations over the local network.
 
-Restart the iPhone and edge host, then repeat.
+Restart the iPhone and device service host, then repeat.
 
 Test with the phone unlocked, locked and recently restarted.
 
@@ -1043,7 +1046,7 @@ the tailnet RSD tunnel; VirtualHere USB link was down at the time):
   - rsd-upgrade PASS: build-bumped v2 installed over v1 with a fresh profile
   - provisioning expiry READABLE: profile_expiry_at captured in JSON
   - D13 verdict: direct Oracle-to-device communication viable; proceed with
-    the device agent on the VPS
+    the device service on the VPS
   - verify-v1/v2, house-arrest/documents, apps inventory could NOT run:
     they need usbmuxd, which was down because the home VirtualHere server
     was off (vhclient could not reach home-desktop:7575). Re-run in usb mode
@@ -1064,7 +1067,7 @@ Second D13 proof run completed 2026-08-07 (usb mode + rsd mode, both PASS):
     (org.sidey.phasetest -> org.sidey.phasetest.A7VT6RU6XK) for all
     downstream lookups
   - D13 verdict: direct Oracle-to-device communication viable; proceed with
-    the device agent on the VPS
+    the device service on the VPS
 Remaining Phase B: locked/restart scenarios. Apple TV over tailnet was
 proven in Phase G (2026-08-09): remote pairing over the tailnet, RSD tunnel
 and tvOS-family install from the VPS; `DEVICE_TYPE` (ios|tvos|watchos) is
@@ -1082,7 +1085,7 @@ The provisioning expiry can be read or reliably derived.
 
 A pairing record survives the expected restart scenario.
 
-The team has selected either direct Oracle communication or a local edge agent.
+The team has selected either direct Oracle communication or a remote node.
 
 Failure at this phase blocks the server implementation until the transport design is corrected.
 
@@ -1096,11 +1099,11 @@ Create a reproducible development and deployment environment.
 
 Create the monorepo and shared schemas.
 
-Build multi stage Dockerfiles for the Go control plane, Rust signer and Rust agent.
+Build multi stage Dockerfiles for the Go control plane, Rust signer and Rust device service.
 
 Add multi architecture image builds.
 
-Create base, Oracle, edge and development Compose files.
+Create base, Oracle, remote-node and development Compose files.
 
 Add PostgreSQL migrations.
 
@@ -1132,7 +1135,7 @@ must start the Oracle stack.
 docker compose -f compose.yaml -f compose.edge.yaml up -d
 ```
 
-must start the edge stack.
+must start the remote-node stack.
 
 Status 2026-08-06: compose foundation scaffolded in deploy/ (base, oracle, edge, development, compatibility, monitoring), multi stage Dockerfiles in packaging/docker, schema migration with tracking table, Docker secrets, health checks and dependency ordering. Verified on this host: fresh apply once, repeatable skip, all services healthy, data survives container replacement. Remaining: multi architecture build verification (buildx, Phase O) and gateway TLS termination with a real domain.
 
@@ -1156,7 +1159,7 @@ Create the central source of truth.
 
 ### Work
 
-Implement users, agents, devices, Apple Accounts, certificates, applications, channels, artifacts, deployments, jobs and audit events.
+Implement users, device service nodes, devices, Apple Accounts, certificates, applications, channels, artifacts, deployments, jobs and audit events.
 
 Implement agent enrolment using a one time enrolment token.
 
@@ -1170,13 +1173,13 @@ Create the initial web dashboard.
 
 ### Deliverables
 
-The dashboard displays agents, devices, applications, deployments and jobs.
+The dashboard displays device service nodes, devices, applications, deployments and jobs.
 
 The API supports agent registration, heartbeat and job acknowledgement.
 
 ### Exit criteria
 
-Two agents cannot execute conflicting jobs for the same device.
+Two device service nodes cannot execute conflicting jobs for the same device.
 
 Restarting the API or worker does not lose an in progress job.
 
@@ -1357,7 +1360,7 @@ Generalise atvloadly’s Apple TV implementation behind the provider interface.
 
 Retain pairing, discovery, multiple accounts and automatic refresh (D12).
 
-Move discovery related privileges into the edge container.
+isolate device discovery privileges to the device service container (never the control plane).
 
 Record installed application inventory and verification results centrally.
 
@@ -1393,7 +1396,7 @@ Implement the provider using `idevice`.
 
 Support USB onboarding and wireless operation.
 
-Store pairing records on the edge host, encrypted at rest.
+Store pairing records in the device service vault on the VPS, encrypted at rest.
 
 Implement application inventory.
 
@@ -1430,7 +1433,7 @@ Pairing repair workflow.
 
 The provider installs and upgrades on each supported operating system version.
 
-The edge agent recovers cleanly after device and agent restart.
+The device service recovers cleanly after device and service restart.
 
 No custom iPhone client is required.
 
@@ -1576,7 +1579,7 @@ Create a minimal LiveContainer integration fork only when necessary.
 
 Add a signed inbox format under LiveContainer’s Documents directory.
 
-Use House Arrest and AFC from the device agent to deliver the IPA and job manifest.
+Use House Arrest and AFC from the device service to deliver the IPA and job manifest.
 
 Add manifest signature verification.
 
@@ -1661,7 +1664,7 @@ A database backup alone cannot decrypt credentials.
 
 The control plane cannot read raw signing private keys without the configured encryption service.
 
-The device agent cannot access unrelated GitHub or Apple credentials.
+The device service cannot access unrelated GitHub or Apple credentials.
 
 No secret appears in normal or debug logs.
 
@@ -1705,7 +1708,7 @@ A clean deployment can be restored using documented backups.
 
 Original artifacts retain verified SHA256 values.
 
-A lost edge agent can be replaced and devices reattached through a documented recovery path.
+A lost device service (remote node) can be replaced and devices reattached through a documented recovery path.
 
 ## Phase O: Public beta and release hardening
 
@@ -1800,7 +1803,7 @@ Application data migration failure
 
 Test local LAN operation.
 
-Test Oracle through a Tailscale connected edge agent.
+Test the default same-VPS device service and a Tailscale connected remote node.
 
 Test direct Oracle communication as an experimental mode.
 
@@ -1831,7 +1834,7 @@ sidey-server/
 ├── cmd/
 │   ├── control-plane/
 │   ├── signing-worker/
-│   ├── device-agent/
+│   ├── device-service/
 │   └── sideyctl/
 ├── internal/
 │   ├── api/
@@ -1846,7 +1849,7 @@ sidey-server/
 │   └── storage/
 ├── rust/
 │   ├── signer/
-│   ├── device-agent/
+│   ├── device-service/
 │   ├── ios-provider/
 │   ├── tvos-provider/
 │   └── ipa-inspector/

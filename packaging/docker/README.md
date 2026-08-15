@@ -12,7 +12,7 @@
 # Images
 #   sidey/control-plane    Go control plane (packaging/docker/control-plane)
 #   sidey/signing-worker   Rust signing worker (packaging/docker/signing-worker)
-#   sidey/device-agent     Rust device agent (packaging/docker/device-agent)
+#   sidey/device-service  Rust device service (packaging/docker/device-service)
 #   sidey/virtualhere-client  VirtualHere client sidecar
 #                             (packaging/docker/virtualhere-client)
 

@@ -58,10 +58,12 @@ func TestMain(m *testing.M) {
 	artifactStore := artifacts.NewStore(artifactDir)
 	server = NewServer(p, logger, auditClient, jobService, artifactStore, adminKey)
 	httpServer = httptest.NewServer(server.Handler())
+	deviceHTTPServer = httptest.NewServer(server.DeviceHandler())
 	pool = p
 
 	code := m.Run()
 	httpServer.Close()
+	deviceHTTPServer.Close()
 	p.Close()
 	os.Exit(code)
 }

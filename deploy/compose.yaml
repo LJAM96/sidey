@@ -68,8 +68,13 @@ services:
       SCHEDULER_INTERVAL_SECONDS: "300"
       REFRESH_LEAD_DAYS: "2"
       ARTIFACT_DIR: /var/lib/sidey/artifacts
+      # ADR-0008: the same-host device service talks to the control plane over
+      # a filesystem-permission-protected Unix socket in /run/sidey instead of
+      # bearer keys. /run/sidey is 0700 root on both host and container.
+      SIDEY_DEVICE_SOCKET: /run/sidey/device.sock
     volumes:
       - sidey-artifacts:/var/lib/sidey/artifacts
+      - /run/sidey:/run/sidey
     secrets:
       - session_signing_key
       - db_password
@@ -105,6 +110,11 @@ services:
     volumes:
       - sidey-signing-state:/var/lib/sidey/signing-worker
       - /var/lib/sidey/2fa:/2fa
+    # Memory-backed runtime dir: signonly decrypts the isideload private key
+    # and anisette state here while a signing job runs. tmpfs means plaintext
+    # is never touched to disk and is wiped when the container stops/crashes.
+    tmpfs:
+      - /run/sidey/signing-state:mode=0700,size=256m
     secrets:
       - apple_credential_key
       - apple_credentials

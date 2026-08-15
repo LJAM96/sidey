@@ -1,6 +1,7 @@
 # Development overlay: expose ports, local-only conveniences.
-# Usage (development topology includes the USB device, so the edge overlay is
-# part of the dev stack):
+# Usage (development includes the USB device, so the device service is
+# part of the dev stack either in default mode or via compose.edge.yaml):
+#   docker compose -f compose.yaml -f compose.development.yaml up -d
 #   docker compose -f compose.yaml -f compose.edge.yaml -f compose.development.yaml up -d
 name: sidey
 
@@ -17,6 +18,6 @@ services:
     ports:
       - "8090:8090"
 
-  device-agent:
+  device-service:
     ports:
       - "8091:8091"

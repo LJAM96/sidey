@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -60,7 +62,8 @@ func main() {
 		logger.Warn("artifact dir not writable", "dir", artifactDir, "error", err)
 	}
 
-	server := api.NewServer(pool, logger, auditClient, jobService, artifactStore, os.Getenv("SIDEY_ADMIN_API_KEY"))
+	server := api.NewServerWithLimits(pool, logger, auditClient, jobService, artifactStore,
+		os.Getenv("SIDEY_ADMIN_API_KEY"), int64(envInt("SIDEY_MAX_ARTIFACT_BYTES", 4<<30)))
 
 	// Refresh scheduler: enqueues refresh jobs for deployments whose profile
 	// is within the lead window of expiry.
@@ -138,10 +141,18 @@ func main() {
 	}()
 
 	port := envOr("PORT", "8080")
+	// Timeouts are part of the hardening contract: ReadTimeout caps slow
+	// request bodies, WriteTimeout prevents a stuck upstream from holding a
+	// connection open indefinitely, and IdleTimeout recycles idle keep-alive
+	// connections so slowloris-style resource exhaustion is bounded.
 	httpServer := &http.Server{
 		Addr:              ":" + port,
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Minute,
+		WriteTimeout:      30 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
@@ -152,11 +163,62 @@ func main() {
 		}
 	}()
 
+	// Same-host device service channel (ADR-0008). When SIDEY_DEVICE_SOCKET
+	// is set, the control plane exposes the device job/control endpoints on a
+	// Unix socket whose parent directory is restricted to this process's
+	// owner (0700). The local device service is trusted without a bearer key;
+	// the remote-node path (agent keys) remains unchanged for optional
+	// multi-site deployments.
+	deviceSocket := envOr("SIDEY_DEVICE_SOCKET", "/run/sidey/device.sock")
+	deviceServer, err := listenDeviceSocket(deviceSocket, server)
+	if err != nil {
+		logger.Warn("device socket not started", "path", deviceSocket, "error", err)
+	} else if deviceServer != nil {
+		logger.Info("device socket listening", "path", deviceSocket)
+	}
+
 	<-ctx.Done()
 	logger.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+	if deviceServer != nil {
+		_ = deviceServer.Shutdown(shutdownCtx)
+		_ = os.Remove(deviceSocket)
+	}
+}
+
+// listenDeviceSocket prepares the Unix socket directory (0700), removes any
+// stale socket file from a previous run, and serves the device handler. The
+// socket file itself is created by the OS with the process umask; the
+// directory mode is what excludes other local users.
+func listenDeviceSocket(socketPath string, server *api.Server) (*http.Server, error) {
+	if socketPath == "" {
+		return nil, nil
+	}
+	dir := filepath.Dir(socketPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.Remove(socketPath)
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return nil, err
+	}
+	deviceServer := &http.Server{
+		Handler:           server.DeviceHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Minute,
+		WriteTimeout:      30 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	go func() {
+		if err := deviceServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Default().Error("device socket server failed", "error", err)
+		}
+	}()
+	return deviceServer, nil
 }
 
 func envInt(name string, fallback int) int {

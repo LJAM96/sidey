@@ -1,0 +1,41 @@
+# Sidey device service (ADR-0008, default same-host topology): claims and
+# executes device intents (install / verify / refresh / inventory) from the
+# control plane over the /run/sidey/device.sock Unix socket, with no bearer
+# keys or enrolment tokens.
+#
+# Must run as root: the wireless/tvOS install wrappers need root for the TUN
+# device and RSD tunnels, and the control-plane socket in /run/sidey is
+# root-owned.
+#
+# The daemon waits for the control plane itself and retries polls, so the
+# unit needs only basic restart-on-failure behaviour.
+#
+# Optional remote-node mode (multi-site): run the same script on another host
+# with SIDEY_API_URL, SIDEY_ENROLMENT_TOKEN (first start) and optionally
+# SIDEY_AGENT_KEY instead of SIDEY_DEVICE_SOCKET.
+[Unit]
+Description=Sidey device service (same-host intents over unix socket)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/sidey/venv-pmd3/bin/python3 /home/ubuntu/git/sidey-server/scripts/sidey-device.py
+Environment=SIDEY_DEVICE_SOCKET=/run/sidey/device.sock
+Environment=SIDEY_AGENT_STATE_DIR=/var/lib/sidey/device-service
+Environment=SIDEY_IPA_DIR=/var/lib/sidey/device-service/ipas
+Environment=SIDEY_POLL_SECONDS=30
+Environment=SIDEY_HEARTBEAT_SECONDS=60
+# Per-job deadline: a dead tunnel hangs the installer (no socket timeouts),
+# so the daemon kills the wrapper and fails the job; the retry loop re-queues.
+Environment=SIDEY_JOB_TIMEOUT=1200
+Restart=on-failure
+RestartSec=10
+UMask=0077
+StateDirectory=sidey
+StateDirectoryMode=0700
+RuntimeDirectory=sidey
+RuntimeDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

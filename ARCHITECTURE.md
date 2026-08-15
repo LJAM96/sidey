@@ -1,6 +1,6 @@
 # Sidey Architecture
 
-This document records the target architecture for the Sidey platform as constrained by the recorded decisions in `plan.md` (D1 to D10). It is the live architecture reference; individual decisions are recorded in the ADRs under `docs/architecture/`.
+This document records the target architecture for the Sidey platform as constrained by the recorded decisions in `plan.md` (D1 to D14). It is the live architecture reference; individual decisions are recorded in the ADRs under `docs/architecture/`.
 
 ## 1. Purpose
 
@@ -10,10 +10,10 @@ Sidey is a self hosted application library, signing service and deployment manag
 
 ### 2.1 Production
 
-The Internet facing control plane is separated from a local edge agent that owns device communication.
+The default deployment is fully VPS hosted: the control plane and the device service that owns device communication run on the same Oracle VPS (D13, ADR-0008). An optional remote-node mode deploys the device service on a second host.
 
 ```text
-Oracle VPS
+Oracle VPS (default)
 │
 ├── Web interface
 ├── Control API
@@ -25,29 +25,27 @@ Oracle VPS
 ├── Artifact storage
 ├── Notification service
 ├── Backup service
+├── Device service
+│   ├── iOS and iPadOS provider (Rust, idevice)
+│   ├── tvOS provider (Go helper behind provider trait, D1)
+│   ├── Pairing record vault
+│   ├── usbmuxd integration
+│   └── Avahi and mDNS integration
 └── Tailscale
         │
-        │ Encrypted tailnet connection
+        │ Tailscale connection to devices (USB only during initial pairing)
         ▼
-Local edge host
-│
-├── Device agent
-├── iOS and iPadOS provider (Rust, idevice)
-├── tvOS provider (Go helper behind provider trait, D1)
-├── Pairing record vault
-├── usbmuxd integration
-├── Avahi and mDNS integration
-└── Tailscale
-        │
-        │ Local Apple device services
-        ▼
-Devices
-├── iPhone
-├── iPad
-└── Apple TV
+    Devices
+    ├── iPhone
+    ├── iPad
+    └── Apple TV
 ```
 
-The edge host may be a NAS, Raspberry Pi, small Linux computer or always on Mac. Direct Oracle to device communication through Tailscale remains experimental until the Phase B transport proof.
+The control plane and device service run on the same host and exchange work over localhost (Unix socket, ADR-0008). The signing worker also runs on this host but only talks to the control plane over its internal API; it has no device mounts and no pairing records.
+
+Initial USB pairing is bootstrapped once through a VirtualHere (or usbip) session, then the pairing record lands in the device service vault directly. Day to day device communication runs over Tailscale: the phone carries the Tailscale app (or the home network has a Tailscale subnet router), so no local host is required after provisioning.
+
+Optional remote-node mode: the device service runs on a separate host (NAS, Raspberry Pi, small Linux computer or always on Mac) connected over the tailnet, useful for multi-site installs. It is not required and is not the default; a single VPS install includes the device service by default.
 
 ### 2.2 Development
 
@@ -57,7 +55,7 @@ Development workstation
 ├── Control plane containers
 ├── PostgreSQL
 ├── Signing worker
-├── Device agent
+├── Device service
 ├── Test artifact storage
 └── USB connected test device
 ```
@@ -83,7 +81,7 @@ signing-worker (Rust)
 ├── Entitlement processing
 └── IPA signing
 
-device-agent (Rust core)
+device-service (Rust core)
 ├── Device discovery
 ├── Pairing validation
 ├── iOS provider (Rust, idevice)
@@ -100,7 +98,7 @@ artifact-store
 └── Original and signed IPA files, content addressed
 ```
 
-The signing worker and device agent are separate processes because they handle different sensitive materials and require different operating system permissions (D1, ADR-0003).
+The signing worker and device service are separate processes because they handle different sensitive materials and require different operating system permissions (D1, ADR-0003, ADR-0008).
 
 ## 4. Language and composition (D1, D2)
 
@@ -108,14 +106,14 @@ The signing worker and device agent are separate processes because they handle d
 |---|---|---|
 | control-plane | Go | Our own implementation; atvloadly's web UI, API and scheduler are not reused (D2) |
 | signing-worker | Rust | Modules extracted from Impactor (MIT) |
-| device-agent core | Rust | Our own implementation |
+| device-service core | Rust | Our own implementation |
 | iOS provider | Rust | `idevice` crate (MIT) |
 | tvOS provider | Go | atvloadly derived helper (D1, AGPL-3.0 per D11) |
 | web dashboard | Go/TS | Our own implementation |
 
 ## 5. Provider interface
 
-The device agent core only knows the provider trait. A future Rust port of the tvOS provider can replace the Go helper without changing the agent core (D1, ADR-0005).
+The device service core only knows the provider trait. A future Rust port of the tvOS provider can replace the Go helper without changing the device service core (D1, ADR-0005).
 
 ```text
 DeviceProvider
@@ -123,16 +121,17 @@ DeviceProvider
 └── IOSProvider (native Rust)
 ```
 
-Agent core responsibilities that are provider independent: job execution, progress reporting, heartbeat, capability reporting, pairing record lifecycle, verification orchestration.
+Device service core responsibilities that are provider independent: job execution, progress reporting, capability reporting, pairing record lifecycle, verification orchestration.
 
 ## 6. Key flows
 
-### 6.1 Agent enrolment and heartbeat
+### 6.1 Device service control channel
 
-1. Operator creates a one time enrolment token in the dashboard.
-2. Agent presents the token to the control plane API.
-3. Control plane issues agent credentials; agent starts heartbeating with capability report.
-4. Jobs are claimed with idempotency keys and a per device lock. PostgreSQL is both the system of record and the job queue (D5); Redis is not used.
+1. Default (same VPS): the control plane and device service are adjacent. The device service attaches to the control plane over a localhost Unix socket; no enrolment tokens or remote credentials are involved (ADR-0008).
+2. Remote node (optional): the operator creates a one time enrolment token in the dashboard; the remote node presents it to the control plane API over Tailscale and receives device service credentials, then reports capability state on an ongoing basis.
+3. Jobs are claimed with idempotency keys and a per device lock. PostgreSQL is both the system of record and the job queue (D5); Redis is not used.
+
+Deployment wiring: the control plane container binds `/run/sidey` (mode 0700) and listens on `SIDEY_DEVICE_SOCKET` (`/run/sidey/device.sock`); the device service runs as a systemd unit (`deploy/host/sidey-device.service`) executing `scripts/sidey-device.py`, which claims intents over the socket — same-host mode uses no credentials, remote-node mode switches to the agent API with `SIDEY_API_URL`/`SIDEY_ENROLMENT_TOKEN`.
 
 ### 6.2 Refresh with update check
 
@@ -187,10 +186,10 @@ Detailed in `THREAT_MODEL.md`. Summary:
 
 - Secrets are mounted as Docker secrets, never environment variables or image layers.
 - Apple credentials, signing keys and pairing records are encrypted at rest with envelope encryption (Phase M).
-- The device agent holds pairing records and device services access only; it never sees Apple account credentials or GitHub credentials.
+- The device service holds pairing records and device services access only; it never sees Apple account credentials, signing keys or GitHub credentials.
 - The signing worker sees Apple credentials and signing keys, not pairing records.
 - The control plane cannot read raw signing private keys without the configured encryption service.
-- Tailscale provides the transport between control plane and edge agent; ACLs restrict agent access.
+- In the default same-VPS mode the control plane and device service exchange work over a localhost Unix socket; in the optional remote-node mode Tailscale provides the transport and ACLs restrict the node.
 
 ## 9. Out of scope for the first release
 

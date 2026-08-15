@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+
+jobs:
+  go:
+    name: Go (build, vet, integration tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sidey
+          POSTGRES_PASSWORD: sidey
+          POSTGRES_DB: sidey_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sidey -d sidey_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Integration tests (migrations 000001-000009 applied)
+        env:
+          # Migrations 000001..000009 are applied by the test harness and the
+          # suite covers enrolment/roles, the device service socket channel,
+          # claim gating and artifact upload.
+          DATABASE_URL: postgres://sidey:sidey@localhost:5432/sidey_test?sslmode=disable
+        run: |
+          go test -count=1 ./internal/... 
+
+  rust:
+    name: Rust (crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check + test isideload examples
+        working-directory: third_party/isideload
+        run: cargo check -p signonly -p wireless
+      - name: Check + test workspace crates
+        run: |
+          for crate in rust/*/; do
+            if [ -f "$crate/Cargo.toml" ]; then
+              echo "== $crate"
+              cargo test --manifest-path "$crate/Cargo.toml"
+            fi
+          done
+
+  python:
+    name: Python (scripts compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile all scripts
+        run: |
+          set -e
+          for f in scripts/*.py; do python3 -m py_compile "$f"; done
+          rm -rf scripts/__pycache__
+
+  shell:
+    name: Shell (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: |
+          shopt -s globstar
+          shellcheck scripts/*.sh scripts/phase-b/*.sh
+
+  docker:
+    name: Compose + migrations sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose files
+        run: |
+          docker compose -f deploy/compose.yaml --env-file /dev/null config >/dev/null
+          docker compose -f deploy/compose.yaml -f deploy/compose.oracle.yaml --env-file /dev/null \
+            -e SIDEY_DOMAIN=ci.example.com config >/dev/null
+      - name: Migration sequence is ordered and free of missing numbers
+        run: |
+          python3 - "$PWD/migrations" <<'PYEOF'
+          import os, re, sys
+          d = sys.argv[1]
+          names = sorted(n for n in os.listdir(d) if n.endswith('.sql'))
+          expect = 1
+          for n in names:
+              m = re.match(r"(\d+)_.+\.sql$", n)
+              if not m:
+                  sys.exit(f"bad name: {n}")
+              if int(m.group(1)) != expect:
+                  sys.exit(f"gap/dup before {n} (expected {expect:06d})")
+              expect += 1
+          print(f"OK: {len(names)} ordered migrations")
+          PYEOF

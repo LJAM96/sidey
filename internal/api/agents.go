@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -9,13 +11,42 @@ import (
 	"sidey/internal/auth"
 )
 
+// Valid agent roles. The role an agent receives is decided server side: it is
+// bound to the admin-issued enrolment token, never taken from capability data
+// supplied by the enrolling client. A compromised agent can therefore only
+// claim the authority its operator granted the token.
+var validAgentRoles = map[string]bool{
+	"device_agent":   true,
+	"refresh_agent":  true,
+	"signing_worker": true,
+	"tvos_agent":     true,
+	// device_service is the ADR-0008 same-host/remote-node device service:
+	// a public, non-secret sentinel identity on the same host, and a normal
+	// enrolled role for remote nodes.
+	"device_service": true,
+}
+
+const defaultAgentRole = "device_agent"
+
+// validRoleList renders the allowed roles for error messages.
+func validRoleList() string {
+	roles := make([]string, 0, len(validAgentRoles))
+	for role := range validAgentRoles {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	return strings.Join(roles, ", ")
+}
+
 type createEnrolmentTokenRequest struct {
 	Label            string `json:"label"`
+	Role             string `json:"role"`
 	ExpiresInSeconds *int   `json:"expires_in_seconds"`
 }
 
-// handleCreateEnrolmentToken issues a one time enrolment token. The plaintext
-// token is returned exactly once; only its hash is stored.
+// handleCreateEnrolmentToken issues an enrolment token bound to a server
+// controlled role. The plaintext token is returned exactly once; only its
+// hash (and a public key id derived from the sha256) are stored.
 func (s *Server) handleCreateEnrolmentToken(w http.ResponseWriter, r *http.Request) {
 	var req createEnrolmentTokenRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -26,12 +57,21 @@ func (s *Server) handleCreateEnrolmentToken(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "label is required"})
 		return
 	}
-	token, err := auth.GenerateSecret()
+	role := req.Role
+	if role == "" {
+		role = defaultAgentRole
+	}
+	if !validAgentRoles[role] {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "role must be one of " + validRoleList()})
+		return
+	}
+	secret, err := auth.GenerateSecret()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "token generation failed")
 		return
 	}
-	hash, err := auth.HashSecret(token)
+	hash, err := auth.HashSecret(secret)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "token hashing failed")
 		return
@@ -42,15 +82,17 @@ func (s *Server) handleCreateEnrolmentToken(w http.ResponseWriter, r *http.Reque
 		expiresAt = &t
 	}
 	_, err = s.pool.Exec(r.Context(), `
-		INSERT INTO agent_enrolment_tokens (token_hash, label, created_by, expires_at)
-		VALUES ($1, $2, $3, $4)`,
-		hash, req.Label, "admin", expiresAt)
+		INSERT INTO agent_enrolment_tokens (token_hash, token_key, label, role, created_by, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		hash, auth.KeyID(secret), req.Label, role, "admin", expiresAt)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "token storage failed")
 		return
 	}
-	s.audit.Record(r.Context(), "admin", "enrolment_token.created")
-	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "label": req.Label})
+	s.audit.Record(r.Context(), "admin", "enrolment_token.created",
+		audit.WithData(map[string]any{"label": req.Label, "role": role}))
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"token": auth.FormatEnrolmentToken(secret), "label": req.Label, "role": role})
 }
 
 type enrolAgentRequest struct {
@@ -63,7 +105,16 @@ type enrolAgentRequest struct {
 }
 
 // handleEnrolAgent consumes a one time token and creates an agent with a
-// fresh API key. The API key is returned exactly once.
+// fresh API key. The API key and the agent's role are returned exactly once.
+//
+// Consumption is atomic and shielded from bcrypt amplification: the token
+// carries a public key id that locates a single candidate row (indexed), the
+// row is locked FOR UPDATE inside the transaction, exactly one bcrypt
+// verification runs, and the consume update requires an unused row
+// (AND used_at IS NULL) with an affected-row-count of one. Two concurrent
+// enrolment requests with the same token therefore cannot both succeed, and
+// N outstanding tokens cannot turn one unauthenticated request into N
+// bcrypts. The agent's role is taken from the token, not the request body.
 func (s *Server) handleEnrolAgent(w http.ResponseWriter, r *http.Request) {
 	var req enrolAgentRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -76,38 +127,91 @@ func (s *Server) handleEnrolAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	token := enrolmentSecret(r.Context())
 
-	// bcrypt hashes are salted, so the incoming token must be verified
-	// against stored hashes rather than re-hashed.
-	var tokenID *uuid.UUID
-	rows, err := s.pool.Query(r.Context(), `
-		SELECT id, token_hash, expires_at
-		FROM agent_enrolment_tokens WHERE used_at IS NULL`)
+	tx, err := s.pool.Begin(r.Context())
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "token lookup failed")
+		s.writeError(w, http.StatusInternalServerError, "transaction failed")
 		return
 	}
-	for rows.Next() {
-		var id uuid.UUID
-		var storedHash string
-		var expiresAt *time.Time
-		if err := rows.Scan(&id, &storedHash, &expiresAt); err != nil {
-			rows.Close()
-			s.writeError(w, http.StatusInternalServerError, "token lookup failed")
+	defer tx.Rollback(r.Context())
+
+	var (
+		tokenID    uuid.UUID
+		storedHash string
+		role       string
+		expiresAt  *time.Time
+		usedAt     *time.Time
+	)
+	keyID, secret, keyed := auth.ParseEnrolmentToken(token)
+	if keyed {
+		// New format: one indexed candidate row, locked for the rest of the
+		// transaction so a concurrent request cannot observe it unused.
+		err := tx.QueryRow(r.Context(), `
+			SELECT id, token_hash, role, expires_at, used_at
+			FROM agent_enrolment_tokens
+			WHERE token_key = $1
+			FOR UPDATE`, keyID).Scan(&tokenID, &storedHash, &role, &expiresAt, &usedAt)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or expired enrolment token"})
+			return
+		}
+		if usedAt != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "enrolment token already used"})
 			return
 		}
 		if expiresAt != nil && expiresAt.Before(time.Now()) {
-			continue
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or expired enrolment token"})
+			return
 		}
-		if auth.VerifySecret(token, storedHash) {
-			t := id
-			tokenID = &t
-			break
+		if !auth.VerifySecret(secret, storedHash) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or expired enrolment token"})
+			return
 		}
-	}
-	rows.Close()
-	if tokenID == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or expired enrolment token"})
-		return
+	} else {
+		// Legacy tokens (created before token_key existed) carry no public id
+		// and can only be located by scanning their hashes. The scan is
+		// bounded to legacy rows only and runs one bcrypt per outstanding
+		// legacy token; issuing new tokens via the format above removes the
+		// amplification path. Grant the default role.
+		role = defaultAgentRole
+		var found bool
+		rows, err := tx.Query(r.Context(), `
+			SELECT id, token_hash, expires_at, used_at
+			FROM agent_enrolment_tokens
+			WHERE token_key IS NULL AND used_at IS NULL
+			FOR UPDATE`)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "token lookup failed")
+			return
+		}
+		for rows.Next() {
+			var id uuid.UUID
+			var hash string
+			var exp *time.Time
+			var used *time.Time
+			if err := rows.Scan(&id, &hash, &exp, &used); err != nil {
+				rows.Close()
+				s.writeError(w, http.StatusInternalServerError, "token lookup failed")
+				return
+			}
+			if exp != nil && exp.Before(time.Now()) {
+				continue
+			}
+			if auth.VerifySecret(token, hash) {
+				tokenID, storedHash = id, hash
+				expiresAt, usedAt = exp, used
+				found = true
+				break
+			}
+		}
+		rows.Close()
+		if !found {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid or expired enrolment token"})
+			return
+		}
+		if usedAt != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "enrolment token already used"})
+			return
+		}
 	}
 
 	apiKey, err := auth.GenerateSecret()
@@ -121,13 +225,6 @@ func (s *Server) handleEnrolAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := s.pool.Begin(r.Context())
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "transaction failed")
-		return
-	}
-	defer tx.Rollback(r.Context())
-
 	var agentID uuid.UUID
 	capabilities := req.Capabilities
 	if capabilities == nil {
@@ -135,31 +232,59 @@ func (s *Server) handleEnrolAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	err = tx.QueryRow(r.Context(), `
 		INSERT INTO agents (name, architecture, operating_system, software_version,
-			tailnet_identity, connection_state, last_heartbeat_at, capabilities, api_key_hash, api_key_id)
-		VALUES ($1, $2, $3, $4, $5, 'online', now(), $6, $7, $8)
+			tailnet_identity, connection_state, last_heartbeat_at, capabilities, role,
+			api_key_hash, api_key_id)
+		VALUES ($1, $2, $3, $4, $5, 'online', now(), $6, $7, $8, $9)
 		RETURNING id`,
 		req.Name, req.Architecture, req.OperatingSystem, req.SoftwareVersion,
-		req.TailnetIdentity, capabilities, apiKeyHash, auth.KeyID(apiKey)).Scan(&agentID)
+		req.TailnetIdentity, capabilities, role, apiKeyHash, auth.KeyID(apiKey)).Scan(&agentID)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "agent creation failed")
 		return
 	}
-	if _, err := tx.Exec(r.Context(), `
-		UPDATE agent_enrolment_tokens SET used_at = now(), used_by_agent = $1 WHERE id = $2`,
-		agentID, *tokenID); err != nil {
+	// Conditional consume: only an unused token row may be marked used. If
+	// a concurrent request already consumed it, the affected row count is
+	// zero and the whole transaction (agent creation included) rolls back.
+	res, err := tx.Exec(r.Context(), `
+		UPDATE agent_enrolment_tokens
+		SET used_at = now(), used_by_agent = $1
+		WHERE id = $2 AND used_at IS NULL`,
+		agentID, tokenID)
+	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "token consumption failed")
+		return
+	}
+	if res.RowsAffected() != 1 {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "enrolment token already used"})
+		return
+	}
+	if err := audit.RecordTx(r.Context(), tx, "admin", "agent.enrolled",
+		audit.WithData(map[string]any{"agent_id": agentID, "name": req.Name, "role": role})); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "audit write failed")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "transaction failed")
 		return
 	}
-	s.audit.Record(r.Context(), "admin", "agent.enrolled",
-		audit.WithData(map[string]any{"agent_id": agentID, "name": req.Name}))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"agent_id": agentID,
 		"api_key":  apiKey,
+		"role":     role,
 	})
+}
+
+// agentRole returns the server controlled role for an agent. Unknown agents
+// fall back to the default (device-scoped) role so a delete-race cannot
+// accidentally elevate an attacker.
+func (s *Server) agentRole(r *http.Request, agentID uuid.UUID) string {
+	var role string
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT role FROM agents WHERE id = $1`, agentID).Scan(&role)
+	if err != nil || role == "" {
+		return defaultAgentRole
+	}
+	return role
 }
 
 type heartbeatRequest struct {
@@ -184,7 +309,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		    capabilities = $1, updated_at = now()
 		WHERE id = $2
 		RETURNING id, name, software_version, tailnet_identity, connection_state,
-		          last_heartbeat_at`,
+		          last_heartbeat_at, role`,
 		capabilities, agentID)
 	var (
 		id          uuid.UUID
@@ -193,8 +318,9 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		tailnet     *string
 		state       string
 		heartbeatAt time.Time
+		role        string
 	)
-	if err := row.Scan(&id, &name, &software, &tailnet, &state, &heartbeatAt); err != nil {
+	if err := row.Scan(&id, &name, &software, &tailnet, &state, &heartbeatAt, &role); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "heartbeat failed")
 		return
 	}
@@ -202,7 +328,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		"agent": map[string]any{
 			"id": id, "name": name, "software_version": software,
 			"tailnet_identity": tailnet, "connection_state": state,
-			"last_heartbeat_at": heartbeatAt,
+			"last_heartbeat_at": heartbeatAt, "role": role,
 		},
 		"server_time": time.Now(),
 	})
