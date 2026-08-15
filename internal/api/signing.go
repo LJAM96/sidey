@@ -351,9 +351,15 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 	}
 
 	// 3. Validate platform compatibility against device and source artifact.
-	if signedMeta.DevicePlatform != devicePlatform || (sourcePlatform != "" && signedMeta.DevicePlatform != sourcePlatform) {
+	if signedMeta.DevicePlatform != devicePlatform {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "signed IPA platform (" + signedMeta.DevicePlatform + ") does not match target device (" + devicePlatform + ") or source artifact (" + sourcePlatform + ")",
+			"error": "signed IPA platform (" + signedMeta.DevicePlatform + ") does not match target device (" + devicePlatform + ")",
+		})
+		return
+	}
+	if sourcePlatform != "" && signedMeta.Platform != sourcePlatform {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "signed IPA SDK platform (" + signedMeta.Platform + ") does not match source artifact (" + sourcePlatform + ")",
 		})
 		return
 	}

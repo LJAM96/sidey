@@ -26,7 +26,12 @@ func newApprovedArtifact(t *testing.T) (uuid.UUID, string) {
 
 func newApprovedArtifactWithBundle(t *testing.T, bundleID string) (uuid.UUID, string) {
 	t.Helper()
-	ipa := testIPA(t, bundleID)
+	return newApprovedArtifactWithPlatform(t, bundleID, "iPhoneOS")
+}
+
+func newApprovedArtifactWithPlatform(t *testing.T, bundleID, sdkPlatform string) (uuid.UUID, string) {
+	t.Helper()
+	ipa := testIPAPlatform(t, bundleID, sdkPlatform)
 	res, body := uploadIPA(t, ipa)
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("upload: %d %v", res.StatusCode, body)
@@ -689,5 +694,107 @@ func TestRoleDerivedJobTypesClaim(t *testing.T) {
 	})
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("refresh agent claiming install should be 403: %d %v", res.StatusCode, body)
+	}
+}
+
+// TestSignedArtifactPlatformMatching validates platform compatibility:
+// - iPhoneOS source -> iOS device -> signed iPhoneOS derivative: accepted (201 Created)
+// - AppleTVOS source -> tvOS device -> signed AppleTVOS derivative: accepted (201 Created)
+// - iPhoneOS source -> iOS device -> signed AppleTVOS derivative: rejected (400 Bad Request)
+// - AppleTVOS source -> tvOS device -> signed iPhoneOS derivative: rejected (400 Bad Request)
+func TestSignedArtifactPlatformMatching(t *testing.T) {
+	truncate(t)
+	_, signKey := enrolAgent(t, "signing-worker-platform")
+	_, err := pool.Exec(t.Context(), `UPDATE agents SET role = 'signing_worker' WHERE name = 'signing-worker-platform'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	iosUDID := "00008120-0000000000000771"
+	tvosUDID := "00008120-0000000000000772"
+	iosDeviceID := reportDevicePlatform(t, signKey, iosUDID, "ios")
+	tvosDeviceID := reportDevicePlatform(t, signKey, tvosUDID, "tvos")
+
+	iosSourceID, _ := newApprovedArtifactWithPlatform(t, "com.example.iosapp", "iPhoneOS")
+	tvosSourceID, _ := newApprovedArtifactWithPlatform(t, "com.example.tvosapp", "AppleTVOS")
+
+	uploadSigned := func(jobID, sourceID, deviceID uuid.UUID, ipaBytes []byte) (*http.Response, map[string]any) {
+		var form bytes.Buffer
+		w := multipart.NewWriter(&form)
+		fw, _ := w.CreateFormFile("ipa", "signed.ipa")
+		fw.Write(ipaBytes)
+		w.WriteField("job_id", jobID.String())
+		w.WriteField("source_artifact_id", sourceID.String())
+		w.WriteField("device_id", deviceID.String())
+		w.Close()
+
+		req, _ := http.NewRequest("POST", httpServer.URL+"/api/v1/signed-artifacts", &form)
+		req.Header.Set("Content-Type", w.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+signKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var parsed map[string]any
+		json.NewDecoder(resp.Body).Decode(&parsed)
+		return resp, parsed
+	}
+
+	setupSignJob := func(sourceID, deviceID uuid.UUID) uuid.UUID {
+		res, body := doJSON(t, "POST", "/api/v1/sign-jobs", adminKey, map[string]any{
+			"artifact_id": sourceID.String(), "device_id": deviceID.String(),
+		})
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("create sign job: %d %v", res.StatusCode, body)
+		}
+		jobID, _ := uuid.Parse(body["id"].(string))
+		res, _ = doJSON(t, "POST", "/api/v1/jobs/claim", signKey, map[string]any{"limit": 1})
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("claim: %d", res.StatusCode)
+		}
+		res, _ = doJSON(t, "POST", "/api/v1/jobs/"+jobID.String()+"/status", signKey, map[string]any{
+			"state": "in_progress",
+		})
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("in_progress: %d", res.StatusCode)
+		}
+		return jobID
+	}
+
+	// 1. iPhoneOS source -> iOS device -> signed iPhoneOS derivative: accepted (201)
+	job1 := setupSignJob(iosSourceID, iosDeviceID)
+	signedIos := testSignedIPAPlatform(t, "com.example.iosapp.signed", "iPhoneOS", "TEAM123", "UUID-1",
+		time.Now().Add(7*24*time.Hour), []string{iosUDID})
+	resp, body := uploadSigned(job1, iosSourceID, iosDeviceID, signedIos)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("iPhoneOS source -> signed iPhoneOS derivative should be accepted: %d %v", resp.StatusCode, body)
+	}
+
+	// 2. AppleTVOS source -> tvOS device -> signed AppleTVOS derivative: accepted (201)
+	job2 := setupSignJob(tvosSourceID, tvosDeviceID)
+	signedTvos := testSignedIPAPlatform(t, "com.example.tvosapp.signed", "AppleTVOS", "TEAM123", "UUID-2",
+		time.Now().Add(7*24*time.Hour), []string{tvosUDID})
+	resp, body = uploadSigned(job2, tvosSourceID, tvosDeviceID, signedTvos)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("AppleTVOS source -> signed AppleTVOS derivative should be accepted: %d %v", resp.StatusCode, body)
+	}
+
+	// 3. iPhoneOS source -> iOS device -> signed AppleTVOS derivative: rejected (400)
+	job3 := setupSignJob(iosSourceID, iosDeviceID)
+	signedCrossTvos := testSignedIPAPlatform(t, "com.example.iosapp.signed2", "AppleTVOS", "TEAM123", "UUID-3",
+		time.Now().Add(7*24*time.Hour), []string{iosUDID})
+	resp, body = uploadSigned(job3, iosSourceID, iosDeviceID, signedCrossTvos)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("signed AppleTVOS uploaded for iPhoneOS source should be rejected: %d %v", resp.StatusCode, body)
+	}
+
+	// 4. AppleTVOS source -> tvOS device -> signed iPhoneOS derivative: rejected (400)
+	job4 := setupSignJob(tvosSourceID, tvosDeviceID)
+	signedCrossIos := testSignedIPAPlatform(t, "com.example.tvosapp.signed2", "iPhoneOS", "TEAM123", "UUID-4",
+		time.Now().Add(7*24*time.Hour), []string{tvosUDID})
+	resp, body = uploadSigned(job4, tvosSourceID, tvosDeviceID, signedCrossIos)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("signed iPhoneOS uploaded for AppleTVOS source should be rejected: %d %v", resp.StatusCode, body)
 	}
 }
