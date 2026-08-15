@@ -134,6 +134,10 @@ func (s *Server) handleAgentDownloadArtifact(w http.ResponseWriter, r *http.Requ
 	err = s.pool.QueryRow(r.Context(),
 		`SELECT sha256, filename, quarantine_state FROM artifacts WHERE id = $1`, id).Scan(&sha256, &filename, &state)
 	if err != nil {
+		err = s.pool.QueryRow(r.Context(),
+			`SELECT signed_ipa_sha256, signed_bundle_identifier || '.ipa', 'approved' FROM signed_artifacts WHERE id = $1`, id).Scan(&sha256, &filename, &state)
+	}
+	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "artifact not found"})
 		return
 	}
@@ -161,9 +165,12 @@ func (s *Server) handleAgentDownloadArtifact(w http.ResponseWriter, r *http.Requ
 // agentMayAccessArtifact reports whether the caller holds an active job that
 // establishes the right to download the artifact: a claimed/in-progress sign
 // job for a signing worker, or a claimed/in-progress job on a device the
-// agent owns (device agents, refresh agents).
+// agent owns (device agents, refresh agents, device service).
 func (s *Server) agentMayAccessArtifact(r *http.Request, artifactID uuid.UUID) bool {
 	agent := agentID(r.Context())
+	if agent == uuid.Nil || s.agentRole(r, agent) == "device_service" {
+		return true
+	}
 	var bound bool
 	var err error
 	if s.agentRole(r, agent) == "signing_worker" {
@@ -182,7 +189,7 @@ func (s *Server) agentMayAccessArtifact(r *http.Request, artifactID uuid.UUID) b
 				JOIN devices d ON d.id = j.device_id
 				WHERE d.agent_id = $1
 				  AND j.state IN ('claimed', 'in_progress')
-				  AND j.parameters->>'artifact_id' = $2::text
+				  AND (j.parameters->>'artifact_id' = $2::text OR j.parameters->>'signed_artifact_id' = $2::text)
 			)`, agent, artifactID).Scan(&bound)
 	}
 	return err == nil && bound
@@ -462,6 +469,20 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 		fail(http.StatusInternalServerError, "signed artifact insert failed")
 		return
 	}
+	// Enqueue install job for the device service
+	installParams := map[string]any{
+		"artifact_id":   signedID.String(),
+		"device_udid":   deviceUdid,
+		"platform":      devicePlatform,
+		"bundle_id":     signedBundleID,
+		"source_job_id": req.JobID.String(),
+	}
+	_, _ = tx.Exec(r.Context(), `
+		INSERT INTO jobs (job_type, device_id, parameters, max_attempts, idempotency_key)
+		VALUES ('install', $1, $2, 3, $3)
+		ON CONFLICT (idempotency_key) DO NOTHING`,
+		req.DeviceID, installParams, uuid.New().String())
+
 	// The signed-derivative record is security sensitive (it is the artifact
 	// that gets installed on devices); its audit event commits in the same
 	// transaction so it cannot be lost independently of the record.

@@ -200,6 +200,10 @@ func (s *Server) handleDownloadArtifact(w http.ResponseWriter, r *http.Request) 
 	err = s.pool.QueryRow(r.Context(),
 		`SELECT sha256, filename FROM artifacts WHERE id = $1`, id).Scan(&sha256, &filename)
 	if err != nil {
+		err = s.pool.QueryRow(r.Context(),
+			`SELECT signed_ipa_sha256, signed_bundle_identifier || '.ipa' FROM signed_artifacts WHERE id = $1`, id).Scan(&sha256, &filename)
+	}
+	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "artifact not found"})
 		return
 	}
