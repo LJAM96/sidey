@@ -53,11 +53,100 @@ type StoreApp struct {
 }
 
 var defaultSources = []StoreSource{
+	// Official & Foundation
 	{
 		ID:        "src-altstore-official",
 		Type:      "altstore",
 		URL:       "https://apps.altstore.io",
 		Name:      "AltStore Official",
+		IsDefault: true,
+	},
+	{
+		ID:        "src-spotcompiled",
+		Type:      "altstore",
+		URL:       "https://spotc-repo.yodaluca.dev/AltStore%20Repo.json",
+		Name:      "SpotCompiled",
+		IsDefault: true,
+	},
+	// Social Media
+	{
+		ID:        "src-apollo-reborn",
+		Type:      "github",
+		URL:       "Apollo-Reborn/Apollo-Reborn",
+		Name:      "Apollo Reborn",
+		IsDefault: true,
+	},
+	{
+		ID:        "src-sparkle-ig",
+		Type:      "github",
+		URL:       "efibalogh/sparkle-ig",
+		Name:      "Sparkle for Instagram",
+		IsDefault: true,
+	},
+	// Media & Streaming
+	{
+		ID:        "src-apex",
+		Type:      "github",
+		URL:       "lowiqentity/APEX",
+		Name:      "APEX",
+		IsDefault: true,
+	},
+	{
+		ID:        "src-youmod",
+		Type:      "github",
+		URL:       "jaydenjcpy/YouMod",
+		Name:      "YouMod",
+		IsDefault: true,
+	},
+	{
+		ID:        "src-youproextra",
+		Type:      "github",
+		URL:       "mrdrvt99/YouProEXTRA",
+		Name:      "YouProEXTRA (YouTube)",
+		IsDefault: true,
+	},
+	{
+		ID:        "src-spotiflac",
+		Type:      "github",
+		URL:       "spotiflacapp/SpotiFLAC-Mobile",
+		Name:      "SpotiFLAC Mobile",
+		IsDefault: true,
+	},
+	// Games & Emulation
+	{
+		ID:        "src-gen1recomp",
+		Type:      "github",
+		URL:       "bryanthaboi/gen1recomp",
+		Name:      "Gen1Recomp",
+		IsDefault: true,
+	},
+	{
+		ID:        "src-ppsspp",
+		Type:      "github",
+		URL:       "hrydgard/ppsspp",
+		Name:      "PPSSPP Emulator",
+		IsDefault: true,
+	},
+	{
+		ID:        "src-provenance",
+		Type:      "github",
+		URL:       "Provenance-Emu/Provenance",
+		Name:      "Provenance-Emu",
+		IsDefault: true,
+	},
+	// General & Utilities
+	{
+		ID:        "src-reynard-browser",
+		Type:      "github",
+		URL:       "minh-ton/reynard-browser",
+		Name:      "Reynard Browser",
+		IsDefault: true,
+	},
+	{
+		ID:        "src-locus",
+		Type:      "github",
+		URL:       "ChrisMack32/Locus",
+		Name:      "Locus",
 		IsDefault: true,
 	},
 	{
@@ -75,17 +164,10 @@ var defaultSources = []StoreSource{
 		IsDefault: true,
 	},
 	{
-		ID:        "src-ppsspp",
+		ID:        "src-sidestore",
 		Type:      "github",
-		URL:       "hrydgard/ppsspp",
-		Name:      "PPSSPP Emulator",
-		IsDefault: true,
-	},
-	{
-		ID:        "src-provenance",
-		Type:      "github",
-		URL:       "Provenance-Emu/Provenance",
-		Name:      "Provenance-Emu",
+		URL:       "SideStore/SideStore",
+		Name:      "SideStore",
 		IsDefault: true,
 	},
 }
@@ -111,7 +193,19 @@ func (s *Server) loadStoreSources() []StoreSource {
 	if err == nil {
 		var custom []StoreSource
 		if err := json.Unmarshal(data, &custom); err == nil {
-			sources = append(sources, custom...)
+			// Deduplicate against defaults
+			for _, c := range custom {
+				exists := false
+				for _, d := range defaultSources {
+					if d.URL == c.URL || d.ID == c.ID {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					sources = append(sources, c)
+				}
+			}
 		}
 	}
 	return sources
@@ -169,8 +263,11 @@ func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
 		if req.Name == "" {
 			req.Name = req.URL
 		}
-	} else if req.Name == "" {
-		req.Name = req.URL
+	} else {
+		req.URL = strings.ReplaceAll(req.URL, " ", "%20")
+		if req.Name == "" {
+			req.Name = req.URL
+		}
 	}
 
 	id := "src-" + uuid.New().String()[:8]
@@ -303,7 +400,7 @@ func detectChannel(bundleID, version, name, desc string) string {
 }
 
 func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
-	url := src.URL
+	url := strings.ReplaceAll(src.URL, " ", "%20")
 	if !strings.HasSuffix(url, ".json") && !strings.Contains(url, "apps.json") {
 		url = strings.TrimSuffix(url, "/") + "/apps.json"
 	}
@@ -353,7 +450,6 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 		sourceTitle = src.Name
 	}
 
-	// Group versions by normalized base application
 	appMap := make(map[string]*StoreApp)
 	var order []string
 
@@ -374,9 +470,7 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 		}
 
 		if existing, exists := appMap[baseKey]; exists {
-			// Append version
 			existing.Versions = append(existing.Versions, ver)
-			// Prefer stable metadata if existing was beta
 			if channel == "stable" {
 				existing.Name = a.Name
 				if a.IconURL != "" {
@@ -409,7 +503,6 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 	var results []StoreApp
 	for _, k := range order {
 		app := appMap[k]
-		// Sort versions: stable first, then by version/channel
 		sort.Slice(app.Versions, func(i, j int) bool {
 			if app.Versions[i].Channel == "stable" && app.Versions[j].Channel != "stable" {
 				return true
@@ -420,7 +513,6 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 			return app.Versions[i].UpdatedDate > app.Versions[j].UpdatedDate
 		})
 
-		// Set primary fields
 		if len(app.Versions) > 0 {
 			primary := app.Versions[0]
 			app.BundleID = primary.BundleID
