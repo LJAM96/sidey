@@ -271,6 +271,17 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 	}
 	defer tx.Rollback(ctx)
 
+	var isGlobalAgent bool
+	if agentID == uuid.Nil {
+		isGlobalAgent = true
+	} else {
+		var role string
+		_ = tx.QueryRow(ctx, `SELECT role FROM agents WHERE id = $1`, agentID).Scan(&role)
+		if role == "device_service" || role == "signing_worker" {
+			isGlobalAgent = true
+		}
+	}
+
 	var devices []uuid.UUID
 	if len(jobTypes) > 0 {
 		// Candidate devices with pending jobs of the requested types.
@@ -294,10 +305,10 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 		if len(candidate) > 0 {
 			var rows pgx.Rows
 			switch {
-			case (agentID == uuid.Nil || globalTypes(jobTypes)) && len(deviceIDs) == 0:
+			case (isGlobalAgent || globalTypes(jobTypes)) && len(deviceIDs) == 0:
 				rows, err = tx.Query(ctx,
 					`SELECT id FROM devices WHERE id = ANY($1) ORDER BY id FOR UPDATE`, candidate)
-			case agentID == uuid.Nil || globalTypes(jobTypes):
+			case isGlobalAgent || globalTypes(jobTypes):
 				rows, err = tx.Query(ctx,
 					`SELECT id FROM devices WHERE id = ANY($1) AND id = ANY($2) ORDER BY id FOR UPDATE`,
 					candidate, deviceIDs)
@@ -320,7 +331,7 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 		}
 	} else if len(deviceIDs) > 0 {
 		var rows pgx.Rows
-		if agentID == uuid.Nil {
+		if isGlobalAgent {
 			rows, err = tx.Query(ctx,
 				`SELECT id FROM devices WHERE id = ANY($1) ORDER BY id FOR UPDATE`, deviceIDs)
 		} else {
@@ -337,7 +348,7 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 		}
 	} else {
 		var rows pgx.Rows
-		if agentID == uuid.Nil {
+		if isGlobalAgent {
 			rows, err = tx.Query(ctx,
 				`SELECT id FROM devices ORDER BY id FOR UPDATE`)
 		} else {
