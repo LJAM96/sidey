@@ -339,6 +339,9 @@ func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json
 		return
 	}
 	defer os.RemoveAll(workDir)
+	// Wipe decrypted isideload state (private key, anisette secrets) from the
+	// memory-backed runtime dir on every exit, success or failure.
+	defer os.RemoveAll(cfg.stateRuntime)
 
 	// 1. Download the approved source IPA.
 	sourceIPA := filepath.Join(workDir, "source.ipa")
@@ -482,8 +485,9 @@ func runSignonly(cfg config, workDir, sourceIPA, signedIPA, machineName, deviceU
 	if deviceUDID == "" {
 		return nil, errors.New("no device UDID: refusing to sign without a target device")
 	}
-	cmd := exec.Command(cfg.signonlyBin, cfg.appleID, cfg.applePassword, sourceIPA, signedIPA)
+	cmd := exec.Command(cfg.signonlyBin, cfg.appleID, sourceIPA, signedIPA)
 	cmd.Env = append(os.Environ(),
+		"SIDEY_APPLE_MAIN_PASSWORD="+cfg.applePassword,
 		"SIDEY_ISIDELOAD_STATE="+cfg.stateRuntime,
 		"ANISETTE_URL="+cfg.anisetteURL,
 		"MACHINE_NAME="+machineName,

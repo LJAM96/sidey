@@ -42,14 +42,15 @@ fi
 
 echo "signing for $DEVICE_UDID (${DEVICE_TYPE:-ios})..." >&2
 # sudo resets the environment; pass every variable the binary reads explicitly
-# (same pattern as wireless-install.sh).
+# (same pattern as wireless-install.sh). The password travels via env, never argv.
 sudo bash -c "source /usr/local/sbin/sidey-creds.sh && \
-    env SIDEY_ISIDELOAD_STATE='${SIDEY_ISIDELOAD_STATE:-/var/lib/sidey/isideload}' \
+    env SIDEY_APPLE_MAIN_PASSWORD=\"\$SIDEY_APPLE_MAIN_PASSWORD\" \
+        SIDEY_ISIDELOAD_STATE='${SIDEY_ISIDELOAD_STATE:-/var/lib/sidey/isideload}' \
         ANISETTE_URL='${ANISETTE_URL:-http://127.0.0.1:6970}' \
         DEVICE_UDID='$DEVICE_UDID' \
         DEVICE_NAME='${DEVICE_NAME:-ACU Covert Camera}' \
         DEVICE_TYPE='${DEVICE_TYPE:-ios}' \
         MACHINE_NAME='${MACHINE_NAME:-isideload-minimal}' \
         SIGNONLY_2FA_CODE_FILE='${SIGNONLY_2FA_CODE_FILE:-/tmp/opencode/2fa-code.txt}' \
-        '$SIGNONLY_BIN' \"\$SIDEY_APPLE_ID\" \"\$SIDEY_APPLE_MAIN_PASSWORD\" '$INPUT_IPA' '$OUTPUT_IPA'"
+        '$SIGNONLY_BIN' \"\$SIDEY_APPLE_ID\" '$INPUT_IPA' '$OUTPUT_IPA'"
 echo "signed test IPA: $OUTPUT_IPA" >&2

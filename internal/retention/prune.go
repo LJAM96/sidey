@@ -22,23 +22,23 @@ import (
 // expired more than `retention` ago, then removes the stored IPA bytes unless
 // another signed artifact or an original artifact still references them. It
 // returns the number of rows pruned.
+//
+// Row deletion and file removal are serialized with artifact uploads through
+// a per-hash advisory lock: an upload publishes its blob and inserts its row
+// in one transaction holding `pg_advisory_xact_lock(hashtext($sha))`, so
+// retention can never decide a hash is unreferenced while an upload holds the
+// bytes, and never delete bytes an upload is about to make freshly visible.
 func PruneSignedArtifacts(ctx context.Context, pool *pgxpool.Pool, auditClient *audit.Client, store *artifacts.Store, retention time.Duration) (int, error) {
 	if retention == 0 {
 		return 0, nil
 	}
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(ctx)
 
-	pruned := 0
-	rows, err := tx.Query(ctx, `
-		SELECT signed_ipa_sha256
+	rows, err := pool.Query(ctx, `
+		SELECT DISTINCT signed_ipa_sha256
 		FROM signed_artifacts
 		WHERE profile_expiry_at IS NOT NULL
-		  AND profile_expiry_at < now() - $1::interval
-		ORDER BY signed_ipa_sha256`, fmt.Sprintf("%d seconds", int64(retention.Seconds())))
+		  AND profile_expiry_at < now() - $1::interval`,
+		fmt.Sprintf("%d seconds", int64(retention.Seconds())))
 	if err != nil {
 		return 0, err
 	}
@@ -56,12 +56,17 @@ func PruneSignedArtifacts(ctx context.Context, pool *pgxpool.Pool, auditClient *
 		return 0, err
 	}
 
-	seen := make(map[string]struct{}, len(shas))
+	pruned := 0
+	removedFiles := 0
 	for _, sha := range shas {
-		if _, ok := seen[sha]; ok {
-			continue
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return pruned, err
 		}
-		seen[sha] = struct{}{}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, sha); err != nil {
+			tx.Rollback(ctx)
+			return pruned, err
+		}
 		res, err := tx.Exec(ctx, `
 			DELETE FROM signed_artifacts
 			WHERE signed_ipa_sha256 = $1
@@ -69,30 +74,28 @@ func PruneSignedArtifacts(ctx context.Context, pool *pgxpool.Pool, auditClient *
 			  AND profile_expiry_at < now() - $2::interval`,
 			sha, fmt.Sprintf("%d seconds", int64(retention.Seconds())))
 		if err != nil {
-			return 0, err
+			tx.Rollback(ctx)
+			return pruned, err
 		}
-		n := res.RowsAffected()
-		pruned += int(n)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
-	}
-
-	// Delete files only after the rows are gone, and only when neither the
-	// signed nor the original artifact tables still reference a hash.
-	removedFiles := 0
-	for sha := range seen {
+		pruned += int(res.RowsAffected())
+		// Once no signed or original artifact row references the hash, the
+		// bytes are unreachable: drop them. Held lock makes this decision
+		// final until commit, so an uploader either sees the file (pre-lock)
+		// or recreates it under the same lock afterwards.
 		var referenced int
-		err := pool.QueryRow(ctx, `
+		if err := tx.QueryRow(ctx, `
 			SELECT (SELECT COUNT(*) FROM signed_artifacts WHERE signed_ipa_sha256 = $1)
 			     + (SELECT COUNT(*) FROM artifacts        WHERE sha256 = $1)`,
-			sha).Scan(&referenced)
-		if err != nil {
-			continue
+			sha).Scan(&referenced); err != nil {
+			tx.Rollback(ctx)
+			return pruned, err
 		}
 		if referenced == 0 && store.Exists(sha) {
 			store.Remove(sha)
 			removedFiles++
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return pruned, err
 		}
 	}
 

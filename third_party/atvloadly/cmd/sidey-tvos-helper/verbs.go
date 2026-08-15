@@ -530,18 +530,30 @@ func opVerify(req request) response {
 		return response{OK: false, Error: "provisioning expired", ErrorStage: "signing"}
 	}
 
-	// Probe device availability when the agent knows the endpoint.
-	available := false
+	// When the device endpoint is supplied, verify does NOT pass on the
+	// worker's own record alone: it demands the device actually respond over
+	// the RSD tunnel (AFC probe). A recorded install with an unreachable
+	// device is a failed verify, not a success.
 	if ip := req.str("ip"); ip != "" && req.int("port") != 0 {
 		cmd := exec.Command("plumesign", "check", "afc", "--ip", ip, "--port", fmt.Sprintf("%d", req.int("port")), "--udid", udid)
 		cmd.Dir = dataDir
 		out, err := cmd.CombinedOutput()
-		available = err == nil && strings.Contains(string(out), "SUCCESS")
+		if err != nil || !strings.Contains(string(out), "SUCCESS") {
+			return response{OK: false, Error: "device unreachable: AFC probe failed", ErrorStage: "installation"}
+		}
 	}
+
+	// Installed-version cross-check: when the caller knows the version it
+	// deployed, the recorded install must match it.
+	if want := req.str("version"); want != "" && found.Version != "" && found.Version != want {
+		return response{OK: false, Error: "installed version mismatch: recorded " +
+			found.Version + " != expected " + want, ErrorStage: "installation"}
+	}
+
 	return response{OK: true, Result: map[string]any{
 		"udid": udid, "bundle_identifier": bundleID,
 		"version": found.Version, "expiration_date": found.ExpirationDate.Format(time.RFC3339),
-		"device_available": available,
+		"installation_verified": true,
 	}}
 }
 

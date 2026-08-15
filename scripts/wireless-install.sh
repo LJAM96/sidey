@@ -78,10 +78,11 @@ fi
 # 3. Sign + install over the tunnel.
 echo "Installing $(basename "$IPA_PATH") over RSD tunnel..."
 sudo bash -c "source /usr/local/sbin/sidey-creds.sh && \
-    env ANISETTE_URL='${ANISETTE_URL:-http://127.0.0.1:6970}' \
+    env SIDEY_APPLE_MAIN_PASSWORD=\"\$SIDEY_APPLE_MAIN_PASSWORD\" \
+        ANISETTE_URL='${ANISETTE_URL:-http://127.0.0.1:6970}' \
         RSD_ADDR='$RSD_ADDR' RSD_PORT='$RSD_PORT' \
         DEVICE_UDID='$DEVICE_UDID' \
         DEVICE_NAME='${DEVICE_NAME:-}' \
         DEVICE_TYPE='${DEVICE_TYPE:-}' \
-        '$BIN' \"\$SIDEY_APPLE_ID\" \"\$SIDEY_APPLE_MAIN_PASSWORD\" '$IPA_PATH'"
+        '$BIN' \"\$SIDEY_APPLE_ID\" '$IPA_PATH'"
 echo "Done."

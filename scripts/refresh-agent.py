@@ -28,6 +28,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -59,6 +60,42 @@ def log(msg):
     print(f"[refresh-agent] {msg}", file=sys.stderr, flush=True)
 
 
+def _write_0600(path, data):
+    """Write a small file atomically with owner-only permissions.
+
+    Created via an exclusive temp file (mode 0o600) in the same directory,
+    then renamed into place so readers never see a partially-written or
+    other-readable copy. The API key is the agent's credential (equivalent
+    to a password) and must never be world-readable.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.chmod(path, 0o600)
+
+
+def _read_key_file():
+    """Return the API key, hardening its permissions if needed."""
+    if not KEY_FILE.exists():
+        return None
+    try:
+        os.chmod(KEY_FILE, 0o600)
+    except OSError:
+        pass
+    return KEY_FILE.read_text().strip()
+
+
 def request(method, path, body=None, bearer=None, timeout=30):
     req = urllib.request.Request(API_URL + path, method=method)
     if body is not None:
@@ -76,7 +113,7 @@ def ensure_api_key():
     if AGENT_KEY:
         return AGENT_KEY
     if KEY_FILE.exists():
-        return KEY_FILE.read_text().strip()
+        return _read_key_file()
     if not ENROLMENT_TOKEN:
         raise SystemExit(
             "no agent key (SIDEY_AGENT_KEY or %s) and no SIDEY_ENROLMENT_TOKEN" % KEY_FILE)
@@ -93,9 +130,8 @@ def ensure_api_key():
     if status != 201:
         raise SystemExit(f"enrol failed ({status}): {resp}")
     key = resp["api_key"]
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    KEY_FILE.write_text(key)
-    AGENT_FILE.write_text(str(resp["agent_id"]))
+    _write_0600(KEY_FILE, key)
+    _write_0600(AGENT_FILE, str(resp["agent_id"]))
     log(f"enrolled as agent {resp['agent_id']}")
     return key
 

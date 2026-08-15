@@ -1,11 +1,34 @@
 # Sidey gateway - Caddy.
 # Internet facing entry point; terminates TLS, proxies to control-plane.
 # The control-plane port is never exposed directly on Oracle.
+#
+# Required: SIDEY_DOMAIN must be set to the public hostname (e.g.
+# sidey.example.com). Caddy obtains an ACME certificate for it automatically.
+# Optional: SIDEY_PUBLIC_EMAIL for ACME expiry alerts.
 
+{
+	email {$SIDEY_PUBLIC_EMAIL}
+}
+
+{$SIDEY_DOMAIN} {
+	encode zstd gzip
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle {
+		reverse_proxy control-plane:8080
+	}
+}
+
+# Plaintext port: serve the healthcheck, redirect everything else to HTTPS.
 :80 {
 	handle /healthz {
 		respond "ok" 200
 	}
 
-	reverse_proxy control-plane:8080
+	handle {
+		redir https://{$SIDEY_DOMAIN}{uri} permanent
+	}
 }

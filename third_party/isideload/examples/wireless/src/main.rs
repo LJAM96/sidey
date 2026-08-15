@@ -7,7 +7,12 @@
 //! so the refresh agent can schedule the next refresh from actual data.
 //!
 //! Usage:
-//!   wireless <apple_id> <apple_password> <app_path>
+//!   wireless <apple_id> <app_path>
+//!
+//! The Apple password is read from the SIDEY_APPLE_MAIN_PASSWORD environment
+//! variable so it never appears in argv/process listings. The legacy
+//! `wireless <apple_id> <password> <app_path>` form is still accepted with a
+//! warning for one-off use.
 //!
 //! Env:
 //!   RSD_ADDR   RSD tunnel address (default fd14:1218:6927::1)
@@ -51,8 +56,23 @@ async fn main() {
     let apple_id = args
         .get(1)
         .expect("Please provide the Apple ID to use for installation");
-    let apple_password = args.get(2).expect("Please provide the Apple ID password");
-    let app_path = PathBuf::from(args.get(3).expect("Please provide the path to the app to install"));
+    // Password via env (never argv). Legacy 4-arg form (password as argv[2])
+    // still works so older callers keep functioning, but is logged.
+    let legacy_password = args.len() >= 4;
+    if legacy_password {
+        eprintln!(
+            "WARNING: wireless called with the Apple password on the command line; use SIDEY_APPLE_MAIN_PASSWORD instead"
+        );
+    }
+    let apple_password = match (env::var("SIDEY_APPLE_MAIN_PASSWORD"), legacy_password) {
+        (Ok(v), _) if !v.is_empty() => v,
+        (_, true) => args[2].clone(),
+        _ => panic!("Please provide the Apple password via SIDEY_APPLE_MAIN_PASSWORD"),
+    };
+    let app_path = PathBuf::from(
+        args.get(if legacy_password { 3 } else { 2 })
+            .expect("Please provide the path to the app to install"),
+    );
 
     let rsd_host: std::net::IpAddr = env::var("RSD_ADDR")
         .unwrap_or_else(|_| "fd14:1218:8b43::1".to_string())
@@ -127,7 +147,7 @@ async fn main() {
                 .set_serial_number("2".to_string())
                 .set_storage(Box::new(FsStorage::new(storage_dir()))),
         )
-        .login(apple_password, Box::new(get_2fa_code))
+        .login(&apple_password, Box::new(get_2fa_code))
         .await;
 
     let mut account = account.expect("Apple login failed");

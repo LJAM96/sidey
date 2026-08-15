@@ -229,12 +229,13 @@ if [ "$MODE" = "rsd" ]; then
   : "${RSD_ADDR:?rsd mode needs SIDEY_RSD_ADDR or a live /run/sidey/rsd-endpoint}"
   : "${RSD_PORT:?rsd mode needs SIDEY_RSD_PORT or a live /run/sidey/rsd-endpoint}"
   RSD_LOG="$OUT_DIR/step-rsd-install.log"
-  if sudo env SIDEY_ISIDELOAD_STATE="${SIDEY_ISIDELOAD_STATE:-/var/lib/sidey/isideload}" \
+  if sudo env SIDEY_APPLE_MAIN_PASSWORD="$SIDEY_APPLE_MAIN_PASSWORD" \
+        SIDEY_ISIDELOAD_STATE="${SIDEY_ISIDELOAD_STATE:-/var/lib/sidey/isideload}" \
         ANISETTE_URL="${ANISETTE_URL:-http://127.0.0.1:6970}" \
         DEVICE_UDID="$DEVICE_UDID" DEVICE_NAME="$DEVICE_NAME" \
         DEVICE_TYPE="${DEVICE_TYPE:-ios}" \
         RSD_ADDR="$RSD_ADDR" RSD_PORT="$RSD_PORT" \
-      "$WIRELESS_BIN" "$SIDEY_APPLE_ID" "$SIDEY_APPLE_MAIN_PASSWORD" \
+      "$WIRELESS_BIN" "$SIDEY_APPLE_ID" \
       "$ORIGINAL_IPA" > "$RSD_LOG" 2>&1; then
     step "rsd-install.exit" 0
     if command -v jq >/dev/null 2>&1; then
@@ -283,12 +284,13 @@ if [ "$MODE" = "rsd" ]; then
   # the upgrade path (new build number on the same device) with real MDM-free
   # RemotePairing transport.
   RSD2_LOG="$OUT_DIR/step-rsd-upgrade.log"
-  if sudo env SIDEY_ISIDELOAD_STATE="${SIDEY_ISIDELOAD_STATE:-/var/lib/sidey/isideload}" \
+  if sudo env SIDEY_APPLE_MAIN_PASSWORD="$SIDEY_APPLE_MAIN_PASSWORD" \
+        SIDEY_ISIDELOAD_STATE="${SIDEY_ISIDELOAD_STATE:-/var/lib/sidey/isideload}" \
         ANISETTE_URL="${ANISETTE_URL:-http://127.0.0.1:6970}" \
         DEVICE_UDID="$DEVICE_UDID" DEVICE_NAME="$DEVICE_NAME" \
         DEVICE_TYPE="${DEVICE_TYPE:-ios}" \
         RSD_ADDR="$RSD_ADDR" RSD_PORT="$RSD_PORT" \
-      "$WIRELESS_BIN" "$SIDEY_APPLE_ID" "$SIDEY_APPLE_MAIN_PASSWORD" \
+      "$WIRELESS_BIN" "$SIDEY_APPLE_ID" \
       "$UP2" > "$RSD2_LOG" 2>&1; then
     step "rsd-upgrade.exit" 0
     if command -v jq >/dev/null 2>&1; then
@@ -435,9 +437,9 @@ with open(os.path.join(outdir, "topology-decision"), "w") as f:
     hard = [v for v in (verdict["installed"], verdict["upgraded"], verdict["provisioning_expiry_readable"])
             if v is False or v == "fail"]
     f.write("Decision: direct Oracle-to-device communication is {0}.".format(
-        "viable; proceed with the device agent on the VPS"
+        "viable; proceed with the device service on the VPS"
         if not hard else
-        "NOT viable; fall back to a local edge host per D13",
+        "NOT viable; fall back to an optional remote node (ADR-0008)",
     ) + "\n")
 print(json.dumps({"verdict": verdict}, indent=2))
 EOF

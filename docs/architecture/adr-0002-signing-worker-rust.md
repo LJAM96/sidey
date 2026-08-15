@@ -16,7 +16,7 @@ Extract or wrap the reusable Impactor modules into a headless Rust signing worke
 
 - Reuses verified Apple service logic instead of reimplementing it.
 - Impactor is MIT, so the extracted code can be incorporated without copyleft obligations.
-- Rust matches the surrounding device agent ecosystem (`idevice` crate).
+- Rust matches the surrounding device service ecosystem (`idevice` crate).
 - Keeps Apple credentials and signing keys inside a dedicated worker with minimal secrets (plan "Initial service model").
 
 ## Consequences

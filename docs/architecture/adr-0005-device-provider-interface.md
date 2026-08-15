@@ -6,11 +6,11 @@
 
 ## Context
 
-The device agent must support iPhone, iPad and Apple TV through different transports (usbmuxd/wireless for iOS, mDNS/Avahi pairing for tvOS). Providers will be swapped and extended (a Rust tvOS port is planned to eventually replace the Go helper). Domain code must not know which provider handles a device.
+The device service must support iPhone, iPad and Apple TV through different transports (usbmuxd/wireless for iOS, mDNS/Avahi pairing for tvOS). Providers will be swapped and extended (a Rust tvOS port is planned to eventually replace the Go helper). Domain code must not know which provider handles a device.
 
 ## Decision
 
-Define a `DeviceProvider` trait as the only boundary the agent core knows:
+Define a `DeviceProvider` trait as the only boundary the device service core knows:
 
 ```text
 DeviceProvider
@@ -25,10 +25,10 @@ Provider specific states are surfaced through an explicit connection capability 
 ## Rationale
 
 - Provider implementations have entirely different transports and failure modes; the trait keeps that contained.
-- A future native Rust tvOS provider can replace the Go helper without agent core changes (D1).
+- A future native Rust tvOS provider can replace the Go helper without device service core changes (D1).
 - Explicit connection states let the scheduler and dashboard distinguish pairing, signing and installation failures (Phase G/H exit criteria).
 
 ## Consequences
 
 - Every new provider must implement the full trait surface; the tvOS helper wrapper is a thin adapter over the Go subprocess JSON interface.
-- Capability reports from the agent must describe which providers it can run.
+- Capability reports from the device service must describe which providers it can run.

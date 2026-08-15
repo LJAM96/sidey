@@ -44,6 +44,12 @@ var ErrMalformed = errors.New("malformed IPA")
 
 var infoPlistPattern = regexp.MustCompile(`^Payload/[^/]+\.app/Info\.plist$`)
 
+// maxMetadataEntrySize bounds the bytes read from a single zip entry while
+// extracting metadata. Info.plist is typically a few KB; anything this large
+// is a malformed or hostile archive, so reject rather than decompress it all
+// (decompression-bomb / zip-bomb protection).
+const maxMetadataEntrySize = 16 << 20
+
 // Inspect reads an IPA from disk and extracts its metadata.
 func Inspect(ipaPath string) (*Metadata, error) {
 	zr, err := zip.OpenReader(ipaPath)
@@ -57,14 +63,20 @@ func Inspect(ipaPath string) (*Metadata, error) {
 	plistFound := false
 	for _, f := range zr.File {
 		if infoPlistPattern.MatchString(f.Name) {
+			if f.UncompressedSize64 > maxMetadataEntrySize {
+				return nil, fmt.Errorf("%w: %s is oversized", ErrMalformed, f.Name)
+			}
 			rc, err := f.Open()
 			if err != nil {
 				return nil, fmt.Errorf("%w: reading %s: %v", ErrMalformed, f.Name, err)
 			}
-			raw, err := io.ReadAll(rc)
+			raw, err := io.ReadAll(io.LimitReader(rc, maxMetadataEntrySize+1))
 			rc.Close()
 			if err != nil {
 				return nil, fmt.Errorf("%w: reading %s: %v", ErrMalformed, f.Name, err)
+			}
+			if len(raw) > maxMetadataEntrySize {
+				return nil, fmt.Errorf("%w: %s is oversized", ErrMalformed, f.Name)
 			}
 			var info map[string]any
 			if _, err := plist.Unmarshal(raw, &info); err != nil {

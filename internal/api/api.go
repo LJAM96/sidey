@@ -28,20 +28,38 @@ type Server struct {
 	jobs      *jobs.Service
 	artifacts *artifacts.Store
 	adminKey  string
-	now       func() time.Time
+	// maxArtifactBytes caps the ingest body size (original IPA uploads and
+	// signed derivative multipart uploads). Requests larger than this are
+	// rejected before the body can exhaust the artifact volume.
+	maxArtifactBytes int64
+	now              func() time.Time
 }
 
 func NewServer(pool *pgxpool.Pool, logger *slog.Logger, auditClient *audit.Client, jobService *jobs.Service, artifactStore *artifacts.Store, adminKey string) *Server {
+	return NewServerWithLimits(pool, logger, auditClient, jobService, artifactStore, adminKey, defaultMaxArtifactBytes)
+}
+
+// NewServerWithLimits constructs the server with an explicit maximum ingest
+// body size for artifact uploads.
+func NewServerWithLimits(pool *pgxpool.Pool, logger *slog.Logger, auditClient *audit.Client, jobService *jobs.Service, artifactStore *artifacts.Store, adminKey string, maxArtifactBytes int64) *Server {
+	if maxArtifactBytes <= 0 {
+		maxArtifactBytes = defaultMaxArtifactBytes
+	}
 	return &Server{
-		pool:      pool,
-		logger:    logger,
-		audit:     auditClient,
-		jobs:      jobService,
-		artifacts: artifactStore,
-		adminKey:  adminKey,
-		now:       time.Now,
+		pool:             pool,
+		logger:           logger,
+		audit:            auditClient,
+		jobs:             jobService,
+		artifacts:        artifactStore,
+		adminKey:         adminKey,
+		maxArtifactBytes: maxArtifactBytes,
+		now:              time.Now,
 	}
 }
+
+// defaultMaxArtifactBytes allows IPAs up to 4 GiB. Configure a smaller value
+// via SIDEY_MAX_ARTIFACT_BYTES when the deployment imposes a tighter limit.
+const defaultMaxArtifactBytes int64 = 4 << 30
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()

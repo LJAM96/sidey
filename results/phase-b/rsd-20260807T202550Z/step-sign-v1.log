@@ -1,1 +1,0 @@
-/home/ubuntu/git/sidey-server/scripts/phase-b/sign-test-ipa.sh: line 33: DEVICE_UDID: DEVICE_UDID is required: signing without a target device cannot activate the app

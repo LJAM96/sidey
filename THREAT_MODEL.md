@@ -9,13 +9,13 @@ Status: Phase A definition. Revise during Phase M (security hardening) and whene
 | Apple account credentials | signing worker, encrypted at rest (Phase M) | Full control of the user's Apple developer identity; irreversible certificate actions |
 | Signing certificate private keys | signing worker, envelope encrypted (Phase M) | Signing abuse; certificates linked to the user's identity |
 | Provisioning profiles | DB + devices | Short lived by design (7 days free); drift if compromised |
-| Pairing records | edge agent vault, encrypted (Phase M) | Device impersonation; access to device services |
+| Pairing records | device service vault on the VPS, encrypted (Phase M) | Device impersonation; access to device services |
 | Original IPA repository | artifact store | Supply chain tampering of distributed apps |
 | Signed derivatives | artifact store cache | Tampered applications installed on devices |
 | Web session credentials | control plane | Full administrative access |
 | Job queue and audit log | PostgreSQL | Obfuscating unauthorised actions |
 | GitHub App credentials (post-v1) | control plane | Private repository access |
-| LiveContainer guest manifests (Phase L) | agent + device Documents | Unauthorised guest installs/removals on devices |
+| LiveContainer guest manifests (Phase L) | device service + device Documents | Unauthorised guest installs/removals on devices |
 | Backup archives | storage volumes | Offline disclosure of everything above |
 
 ## 2. Actors
@@ -23,7 +23,8 @@ Status: Phase A definition. Revise during Phase M (security hardening) and whene
 | Actor | Trust level |
 |---|---|
 | Administrator (single user, D4) | Fully trusted; the only human principal in v1 |
-| Device agent | Trusted on the tailnet, limited to device services and pairing records; must not access Apple or GitHub credentials |
+| Device service | Trusted process alongside the control plane on the VPS, limited to device services and pairing records; must not access Apple or GitHub credentials |
+| Remote node (optional mode) | Copy of the device service on a separate host connected over Tailscale; same limits as the device service, exposure reduced by Tailscale ACLs |
 | External internet attacker | Untrusted; faces the gateway, API, webhooks (post-v1) |
 | Compromised container | Untrusted; workload isolation is the boundary |
 | Malicious IPA author | Untrusted; IPA parsing happens in quarantine with validation before approval |
@@ -40,15 +41,15 @@ Status: Phase A definition. Revise during Phase M (security hardening) and whene
 | Key loss makes certificates unrecoverable | Backup of encrypted keys with separate backup encryption key; certificate revocation and recovery path | F, M, N |
 | Credential brute force / lockout | Account lockout protection, failure counting on Apple account records | M |
 | Secrets leak via logs | Structured redaction of secrets and pairing material | M |
-| Apple credential compromise during agent enrolment | Enrolment uses one time tokens; agents never receive Apple credentials | D, M |
+| Apple credential compromise during agent enrolment | Enrolment uses one time tokens; the device service never receives Apple credentials | D, M |
 
 ### 3.2 Pairing records
 
 | Threat | Mitigation | Phase |
 |---|---|---|
-| Pairing record theft enables device impersonation | Encrypted at rest on the edge host; separate vault; redacted from logs | H, M |
+| Pairing record theft enables device impersonation | Encrypted at rest in the device service vault on the VPS; separate vault; redacted from logs | H, M |
 | Lost pairing record bricks remote device management | Recovery workflow; pairing records backed up separately | H, N |
-| Edge agent compromise exposes device services | Agent scoped to minimum secrets; Tailscale ACLs; device services only reachable from agent | M |
+| Device service compromise exposes device services | Default (same VPS) mode: device service scoped to minimum secrets and reachable only from the control plane over localhost; remote-node mode: Tailscale ACLs reduce exposure | M |
 
 ### 3.3 IPA repository and signing pipeline
 
@@ -64,10 +65,10 @@ Status: Phase A definition. Revise during Phase M (security hardening) and whene
 
 | Threat | Mitigation | Phase |
 |---|---|---|
-| Devices reached from the wrong host | Device services and pairing isolated to the edge agent | M |
+| Devices reached from the wrong host | Default mode: device service is the only process with device mounts, adjacent to the control plane over localhost; remote-node mode: only the remote node carries device mounts | M |
 | Tailscale loss mid-installation | Job resumption, idempotent job claims, per device locks | B, D |
 | Locked/offline device causes endless retry | Explicit connection capability state; retry backoff; critical expiry alerts | H, I |
-| tvOS discovery privileges leak to control plane | Avahi/DBus/usbmuxd mounts exist only in the edge container | C |
+| tvOS discovery privileges leak to control plane | Avahi/DBus/usbmuxd mounts exist only in the device service container | C |
 
 ### 3.5 Web and API
 
@@ -94,22 +95,31 @@ Status: Phase A definition. Revise during Phase M (security hardening) and whene
 | Altered IPA in the inbox | Hash verification against the signed manifest | L |
 | Failed update destroys guest data | Install/update/remove actions preserve data containers; failed update leaves previous guest usable | L |
 
-## 4. Trust boundaries
+## 4. Process boundaries
+
+The default deployment runs every process on the Oracle VPS. The three worker processes are isolated from each other so that a compromise of one never overlaps another's secrets, even though the hosts are shared.
 
 ```text
-Internet ──TLS──► gateway ──► control-plane ──tailnet──► device-agent ──Apple services──► devices
-                            │
-                            ├── postgres (DB: no raw keys)
-                            └── signing-worker (Apple creds + keys only)
+Internet ──TLS──► gateway ──► control-plane ──┬── postgres (DB: no raw keys)
+                                             ├── signing-worker (Apple creds + keys only)
+                                             └── device-service (pairing vault + device services only)
+                                                  │
+                                             Tailscale / USB
+                                                  ▼
+                                               devices
 ```
 
-- Control plane: never holds raw signing keys or Apple credential plaintext after enrolment.
+In the default VPS mode the control plane and device service run on the same host and talk over a localhost/Unix socket; in the optional remote-node mode the device service runs on a separate host connected over the tailnet.
+
+- Control plane: never holds raw signing keys or Apple credential plaintext after enrolment; never has USB/Avahi device mounts.
 - Signing worker: never holds pairing records; never talks to devices.
-- Device agent: never holds Apple account credentials or GitHub credentials.
-- Devices: only accept installs from the edge agent using validated pairing.
+- Device service: never holds Apple account credentials, signing keys or GitHub credentials; receives only signed IPAs and pairing records.
+- Devices: only accept installs from the device service using validated pairing.
+- Remote node (optional mode): same device service limits, exposed across the tailnet; tailnet ACLs restrict it to its own device communication.
 
 ## 5. Residual risks
 
 - Free team Apple accounts impose short profile lifetimes; a long outage can let all profiles lapse simultaneously. Mitigated by critical expiry alerts and backup of profiles, but a full lapse requires an online Apple interaction to recover.
 - iOS determines whether suspended applications receive execution time; Phase L automation is best effort by design.
 - atvloadly licensing is resolved (Sidey is AGPL-3.0, D11); the LiveContainer README licence discrepancy is a documentation bug to raise upstream, not an operational risk.
+- The optional remote-node mode reintroduces remote device exposure compared with the default same-VPS mode; the tailnet is the compensating control, so remote-node deployments must keep Tailscale ACLs tight and the node free of other workloads.

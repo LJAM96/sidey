@@ -5,7 +5,7 @@
 //! printing a JSON document to stdout on completion or failure.
 //!
 //! Usage:
-//!   signonly <apple_id> <apple_password> <input.ipa> <output.ipa>
+//!   signonly <apple_id> <input.ipa> <output.ipa>
 //!
 //! Env:
 //!   SIDEY_ISIDELOAD_STATE  isideload storage dir (cert identity, anisette state)
@@ -15,6 +15,13 @@
 //!   DEVICE_TYPE            target platform: ios|tvos|watchos (default ios)
 //!   MACHINE_NAME           certificate identity machine name (default isideload-minimal)
 //!   SIGNONLY_2FA_CODE_FILE path to a file containing a 2FA code (default /tmp/opencode/2fa-code.txt)
+//!
+//! Credentials: the Apple ID is a positional argument; the password is read
+//! from the SIDEY_APPLE_MAIN_PASSWORD environment variable. The password is
+//! deliberately NOT accepted as a command-line argument, so it never appears
+//! in /proc/PID/cmdline or process listings. The legacy
+//! `signonly <apple_id> <password> <in.ipa> <out.ipa>` form is still accepted
+//! with a warning for one-off use.
 //!
 //! Success output:
 //!   {"status":"ok","signed_ipa_sha256":"...","bundle_identifier":"...",
@@ -242,18 +249,32 @@ async fn main() {
         Some(v) => v.clone(),
         None => fail("other", "missing Apple ID argument"),
     };
-    let apple_password = match args.get(2) {
-        Some(v) => v.clone(),
-        None => fail("other", "missing Apple password argument"),
+    // Password from env by default; accept the legacy 4-arg form (password on
+    // the command line) only with a warning, so old callers keep working while
+    // new callers never leak the password into argv.
+    let input_ipa = match args.len() {
+        5 => {
+            eprintln!("WARNING: legacy signonly invocation leaked the Apple password onto the command line; use SIDEY_APPLE_MAIN_PASSWORD instead");
+            PathBuf::from(args[3].clone())
+        }
+        4 => PathBuf::from(args[2].clone()),
+        _ => fail("other", "usage: signonly <apple_id> <input.ipa> <output.ipa>"),
     };
-    let input_ipa = PathBuf::from(match args.get(3) {
-        Some(v) => v.clone(),
-        None => fail("other", "missing input IPA argument"),
-    });
-    let output_ipa = PathBuf::from(match args.get(4) {
-        Some(v) => v.clone(),
-        None => fail("other", "missing output IPA argument"),
-    });
+    let output_ipa = match args.len() {
+        5 => PathBuf::from(args[4].clone()),
+        4 => PathBuf::from(args[3].clone()),
+        _ => fail("other", "usage: signonly <apple_id> <input.ipa> <output.ipa>"),
+    };
+    let apple_password = match env::var("SIDEY_APPLE_MAIN_PASSWORD") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            if args.len() == 5 {
+                args[2].clone()
+            } else {
+                fail("other", "missing Apple password (set SIDEY_APPLE_MAIN_PASSWORD)")
+            }
+        }
+    };
 
     let device_name = env::var("DEVICE_NAME").unwrap_or_else(|_| "Sidey signing target".to_string());
     let device_udid = env::var("DEVICE_UDID").unwrap_or_default();

@@ -2,6 +2,8 @@
 // agent API keys and admin keys. Agent keys are stored as bcrypt hashes.
 package auth
 
+import "strings"
+
 import (
 	"crypto/rand"
 	"crypto/sha256"
@@ -49,4 +51,23 @@ func VerifySecret(secret, storedHash string) bool {
 // ConstantTimeEqual compares two strings in constant time.
 func ConstantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// FormatEnrolmentToken packages a secret with its public key id so that an
+// unauthenticated enrolment request can resolve exactly one candidate row
+// before running the single bcrypt verification, rather than scanning every
+// outstanding token hash (a bcrypt CPU amplification vector).
+func FormatEnrolmentToken(secret string) string {
+	return KeyID(secret) + "." + secret
+}
+
+// ParseEnrolmentToken splits a token of the form "<keyid>.<secret>" back
+// into its public identifier and secret. It reports false for legacy tokens
+// that do not carry a key id prefix.
+func ParseEnrolmentToken(token string) (keyID, secret string, ok bool) {
+	i := strings.IndexByte(token, '.')
+	if i <= 0 || i == len(token)-1 {
+		return "", "", false
+	}
+	return token[:i], token[i+1:], true
 }

@@ -27,8 +27,14 @@ Environment=SIDEY_JOB_TIMEOUT=900
 # this var can be removed afterwards.
 Restart=on-failure
 RestartSec=10
+# Owner-only umask + a 0700 state dir: every file the agent writes (API key,
+# agent id) stays unreadable by other users, including after it relocates a
+# freshly written key.
+UMask=0077
 StateDirectory=sidey
+StateDirectoryMode=0700
 RuntimeDirectory=sidey
+RuntimeDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target

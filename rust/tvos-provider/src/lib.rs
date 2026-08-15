@@ -15,12 +15,26 @@
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use device_provider::{
     ConnectionState, DeviceInfo, DeviceProvider, Error, ErrorKind, InstallOutcome, InstallRequest,
     InstalledApp, ProfileInfo, Result, SandboxEntry,
 };
 use serde_json::{json, Value};
+
+/// Upper bound on how long a single request may take before the helper is
+/// considered hung. Signing + install across the RSD tunnel can take a few
+/// minutes; anything still unresponsive after this is never coming back.
+fn response_deadline() -> Duration {
+    let secs: u64 = std::env::var("SIDEY_TVOS_PROVIDER_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    Duration::from_secs(secs)
+}
 
 /// Device endpoint metadata from the control plane registration (ADR-0004).
 #[derive(Debug, Clone)]
@@ -40,7 +54,10 @@ pub struct TvosProvider {
     data_dir: PathBuf,
     child: Child,
     stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    // Response lines arrive on a dedicated reader thread with a receive
+    // deadline, so a hung helper cannot block the agent forever.
+    responses: Receiver<String>,
+    reader: Option<JoinHandle<()>>,
     counter: u64,
 }
 
@@ -77,18 +94,18 @@ impl TvosProvider {
                 .take()
                 .ok_or_else(|| Error::new(ErrorKind::Protocol, "helper stdin closed on spawn"))?,
         );
-        let stdout = BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or_else(|| Error::new(ErrorKind::Protocol, "helper stdout closed on spawn"))?,
-        );
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::new(ErrorKind::Protocol, "helper stdout closed on spawn"))?;
+        let (responses, reader) = spawn_reader(stdout);
         Ok(TvosProvider {
             spec: spec.clone(),
             data_dir,
             child,
             stdin,
-            stdout,
+            responses,
+            reader: Some(reader),
             counter: 0,
         })
     }
@@ -102,21 +119,31 @@ impl TvosProvider {
         self.stdin.write_all(b"\n").map_err(Error::from)?;
         self.stdin.flush().map_err(Error::from)?;
 
-        let mut buf = String::new();
+        // Wait for the matching response up to a deadline; a hung helper (a
+        // stalled plumesign subprocess, a wedged tunnel) must surface as an
+        // error instead of blocking the agent's per-device thread forever.
+        let deadline = std::time::Instant::now() + response_deadline();
         loop {
-            buf.clear();
-            let n = self
-                .stdout
-                .read_line(&mut buf)
-                .map_err(|_| Error::new(ErrorKind::Offline, "helper stdout read failed"))?;
-            if n == 0 {
-                return Err(Error::new(ErrorKind::Offline, "helper exited"));
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::new(
+                    ErrorKind::Protocol,
+                    format!("helper did not respond to {op} within {remaining:?}"),
+                ));
             }
-            let line = buf.trim();
-            if line.is_empty() || !line.starts_with('{') {
-                continue;
-            }
-            let resp: Response = match serde_json::from_str(line) {
+            let line = match self.responses.recv_timeout(remaining) {
+                Ok(line) => line,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(Error::new(
+                        ErrorKind::Protocol,
+                        format!("helper did not respond to {op} before the deadline"),
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(Error::new(ErrorKind::Offline, "helper exited"));
+                }
+            };
+            let resp: Response = match serde_json::from_str(&line) {
                 Ok(r) => r,
                 Err(_) => continue, // log noise on stdout, skip
             };
@@ -139,10 +166,34 @@ impl TvosProvider {
     }
 }
 
+/// Drain the helper's stdout on a background thread. Each JSON line is
+/// forwarded to `TvosProvider`, the channel closes on EOF/exit so `request`
+/// can detect a dead helper via `RecvTimeoutError::Disconnected`.
+fn spawn_reader(mut stdout: ChildStdout) -> (Receiver<String>, JoinHandle<()>) {
+    let (tx, rx) = mpsc::channel::<String>();
+    let handle = std::thread::spawn(move || {
+        let reader = BufReader::new(&mut stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            let line = line.trim().to_string();
+            if line.is_empty() || !line.starts_with('{') {
+                continue;
+            }
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    (rx, handle)
+}
+
 impl Drop for TvosProvider {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 
@@ -247,15 +298,18 @@ impl DeviceProvider for TvosProvider {
             }),
         );
         let outcome = match verify {
+            // Verify succeeded: opVerify only reports ok when the device
+            // answered the required AFC probe and (when requested) the
+            // installed version matched.
             Ok(v) => InstallOutcome {
                 verified: v
                     .result
-                    .get("device_available")
+                    .get("installation_verified")
                     .and_then(|x| x.as_bool())
-                    .unwrap_or(true),
+                    .unwrap_or(false),
                 ..installed
             },
-            Err(_) => installed,
+            Err(_) => InstallOutcome { verified: false, ..installed },
         };
         Ok(outcome)
     }

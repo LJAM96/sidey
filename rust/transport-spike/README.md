@@ -2,7 +2,7 @@
 
 Phase B transport spike for Sidey. A small Rust CLI proving that external installation, upgrade and refresh operations are possible against iOS/iPadOS devices using the `idevice` crate, without any SideStore or on device client.
 
-This is a temporary crate. Its verified behaviour becomes the iOS provider inside the device agent.
+This is a temporary crate. Its verified behaviour becomes the iOS provider inside the device service.
 
 ## Build
 
@@ -45,7 +45,7 @@ USB first, then wireless, then restart scenarios. Record the output of every run
 4. **Documents**: `documents --bundle-id <id>` confirms House Arrest access (required for the LiveContainer inbox later).
 5. **Profiles**: `verify` prints profile UUIDs and expiry dates; expiry must be readable for the refresh scheduler.
 6. **Wireless**: enable wireless debugging (Xcode or Apple Configurator), `list` shows the device with a Network connection type, repeat 2-5.
-7. **Restart**: restart the iPhone and the edge host, repeat `list`, `validate`, `apps`. The pairing record must survive.
+7. **Restart**: restart the iPhone and the device service host, repeat `list`, `validate`, `apps`. The pairing record must survive.
 8. **States**: repeat with the phone unlocked, locked and recently restarted; record which operations fail in each state.
 9. **Lockdown vs iOS 27 network pairing**: test persistent Lockdown pairing (step 1) separately from the newer network onboarding flow.
 10. **Uninstall**: `uninstall --bundle-id <id>` after the tests.

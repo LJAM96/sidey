@@ -34,14 +34,14 @@ a Sidey bug.
 
 ## Consequences
 
-- Sidey's device agent must not depend on House Arrest for personal-team
+- Sidey's device service must not depend on House Arrest for personal-team
   targets; the sandbox/Documents path to On-VPS file delivery needs an
   alternate mechanism (e.g. sideload of a helper with the target in a shared
   container is also affected; treat as a feature risk for that route).
 - The `documents` proof step uses `soft_step` so the D1.3 verdict remains
   "viable" (install/upgrade/verify/uninstall/pairing all pass).
 - ADR-0005's feature list should note this restriction as a provider
-  capability flag for the agent to report to the dashboard.
+  capability flag for the device service to report to the dashboard.
 
 ## Consequences
 

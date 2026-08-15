@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/google/uuid"
@@ -16,6 +17,49 @@ import (
 type Client struct {
 	pool   *pgxpool.Pool
 	logger *slog.Logger
+}
+
+// RecordTx inserts one audit event inside the caller's transaction. Unlike
+// Record it propagates failures, making the audit event part of the same
+// committed unit of work as the state change it describes. Use it for
+// security-sensitive actions (enrolment, certificate changes, artifact
+// approval, signed-derivative uploads). Failure of the audit write aborts the
+// caller's transaction, so a sensitive state change can never succeed without
+// its authoritative audit record.
+func RecordTx(ctx context.Context, tx pgx.Tx, actor, action string, opts ...Option) error {
+	ev := &event{actor: actor, action: action, result: "ok"}
+	for _, o := range opts {
+		o(ev)
+	}
+	previous, err := marshalState(ev.previous)
+	if err != nil {
+		return fmt.Errorf("audit marshal previous: %w", err)
+	}
+	current, err := marshalState(ev.current)
+	if err != nil {
+		return fmt.Errorf("audit marshal current: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO audit_events
+			(actor, action, device_id, application_id, artifact_sha256,
+			 previous_state, new_state, occurred_at, result)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)`,
+		ev.actor, ev.action, ev.deviceID, ev.application, ev.artifact,
+		previous, current, ev.result)
+	return err
+}
+
+// marshalState JSON-encodes an optional state snapshot, degrading to an
+// inline error object rather than failing the call.
+func marshalState(v any) ([]byte, error) {
+	if v == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return []byte(fmt.Sprintf(`{"error":%q}`, err.Error())), nil
+	}
+	return b, nil
 }
 
 func New(pool *pgxpool.Pool, logger *slog.Logger) *Client {

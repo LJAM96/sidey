@@ -46,7 +46,15 @@ func (s *Server) handleRevokeCertificate(w http.ResponseWriter, r *http.Request)
 		reason = req.Reason
 	}
 
-	res, err := s.pool.Exec(r.Context(), `
+	// Certificate revocation is security sensitive; the audit event commits
+	// in the same transaction so it cannot be lost independently.
+	tx, err := s.pool.Begin(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "transaction failed")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	res, err := tx.Exec(r.Context(), `
 		UPDATE certificates
 		SET revoked = true, revoked_at = now(), revoked_reason = $2
 		WHERE id = $1`, id, reason)
@@ -58,8 +66,15 @@ func (s *Server) handleRevokeCertificate(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "certificate not found"})
 		return
 	}
-	s.audit.Record(r.Context(), "admin", "certificate.revoked",
-		audit.WithData(map[string]any{"certificate_id": id, "reason": reason}))
+	if err := audit.RecordTx(r.Context(), tx, "admin", "certificate.revoked",
+		audit.WithData(map[string]any{"certificate_id": id, "reason": reason})); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "audit write failed")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "transaction failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":              id.String(),
 		"revoked":         true,

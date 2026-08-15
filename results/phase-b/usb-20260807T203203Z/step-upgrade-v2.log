@@ -1,6 +1,0 @@
-[2m2026-08-07T20:32:18.160537Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m device: udid=00008120-001E11211184C01E connection=Usb
-[2m2026-08-07T20:32:19.568709Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m staged 186884 bytes to PublicStaging/test-v2-signed.ipa
-[2m2026-08-07T20:32:20.294526Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m upgrading PublicStaging/test-v2-signed.ipa ...
-[2m2026-08-07T20:32:21.285405Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m upgrade progress=90
-[2m2026-08-07T20:32:21.371026Z[0m [32m INFO[0m [2mtransport_spike[0m[2m:[0m upgrade progress=100
-operation=upgrade result=ok

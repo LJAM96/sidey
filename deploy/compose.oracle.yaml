@@ -12,6 +12,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      SIDEY_DOMAIN: ${SIDEY_DOMAIN:?SIDEY_DOMAIN must be set (public hostname)}
+      SIDEY_PUBLIC_EMAIL: ${SIDEY_PUBLIC_EMAIL:-}
     volumes:
       - ../deploy/config/gateway/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

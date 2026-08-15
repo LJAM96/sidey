@@ -28,7 +28,28 @@ const (
 	StateInProgress = "in_progress"
 	StateCompleted  = "completed"
 	StateFailed     = "failed"
+	// StateDead marks a job that can never succeed (revoked certificate,
+	// authentication failure, corrupt IPA, ...) or that exhausted its retry
+	// budget. Dead jobs are never re-queued; they surface on the dashboard
+	// as requiring attention, so an operator decides.
+	StateDead = "dead"
 )
+
+// terminalErrorCategories describe failures that retrying cannot fix. Reaping
+// classifies a failed job with one of these as dead instead of re-queuing it,
+// so a permanently broken sign/refresh cannot hammer the queue (and Apple's
+// services) forever. Network and timeout failures remain retryable.
+var terminalErrorCategories = map[string]bool{
+	"auth":                 true,
+	"certificate":          true,
+	"provisioning":         true,
+	"entitlement":          true,
+	"unsupported_job_type": true,
+}
+
+// defaultMaxAttempts bounds how many times a job can be claimed before it is
+// retired to the dead state. Individual jobs may override via max_attempts.
+const defaultMaxAttempts = 5
 
 // JobTypeRefresh identifies refresh jobs created by the scheduler (Phase I).
 // The refresh agent claims them, re-signs the app and reports back; the
@@ -539,6 +560,12 @@ func (s *Service) leaseSeconds() string {
 // re-queues failed refresh and sign jobs (an app must be kept signed, and a
 // sign request may fail transiently), and marks agents offline when their
 // heartbeat is stale. Called periodically by the scheduler.
+//
+// Retry is finite: a failed job whose error category is terminal (auth,
+// certificate, provisioning, entitlement, unsupported type) or whose attempt
+// count reached max_attempts is moved to the dead state with
+// requires_attention instead of being re-queued, so permanently broken work
+// never retries forever (or keeps hitting external services).
 func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -547,7 +574,7 @@ func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 	defer tx.Rollback(ctx)
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, device_id, attempt
+		SELECT id, device_id, attempt, error_category, max_attempts, state
 		FROM jobs
 		WHERE (state IN ($1, $2) AND lease_expires_at < now())
 		   OR (state = $3 AND job_type IN ($4, $5))
@@ -557,14 +584,17 @@ func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 		return 0, err
 	}
 	type expired struct {
-		id       uuid.UUID
-		deviceID *uuid.UUID
-		attempt  int
+		id            uuid.UUID
+		deviceID      *uuid.UUID
+		attempt       int
+		errorCategory *string
+		maxAttempts   int
+		state         string
 	}
 	var expiredJobs []expired
 	for rows.Next() {
 		var j expired
-		if err := rows.Scan(&j.id, &j.deviceID, &j.attempt); err != nil {
+		if err := rows.Scan(&j.id, &j.deviceID, &j.attempt, &j.errorCategory, &j.maxAttempts, &j.state); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -577,6 +607,52 @@ func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 
 	backoff := s.backoffSeconds()
 	for _, j := range expiredJobs {
+		category := ""
+		if j.errorCategory != nil {
+			category = *j.errorCategory
+		}
+		maxAttempts := j.maxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = defaultMaxAttempts
+		}
+		terminal := j.state == StateFailed && terminalErrorCategories[category]
+		exhausted := j.attempt >= maxAttempts
+		if terminal {
+			reason := category
+			_, err = tx.Exec(ctx, `
+				UPDATE jobs
+				SET state = $1, claimed_by = NULL, lease_expires_at = NULL,
+				    retry_at = NULL, requires_attention = true,
+				    last_failure_class = $2, dead_reason = $3, updated_at = now()
+				WHERE id = $4`,
+				StateDead, category, "terminal_error:"+reason, j.id)
+			if err != nil {
+				return 0, err
+			}
+			s.audit.Record(ctx, "scheduler", "job.dead",
+				audit.WithDevice(j.deviceID),
+				audit.WithResult("terminal error "+reason+"; not retried"))
+			reaped++
+			continue
+		}
+		if exhausted {
+			reason := "max_attempts"
+			_, err = tx.Exec(ctx, `
+				UPDATE jobs
+				SET state = $1, claimed_by = NULL, lease_expires_at = NULL,
+				    retry_at = NULL, requires_attention = true,
+				    last_failure_class = $2, dead_reason = $3, updated_at = now()
+				WHERE id = $4`,
+				StateDead, category, reason, j.id)
+			if err != nil {
+				return 0, err
+			}
+			s.audit.Record(ctx, "scheduler", "job.dead",
+				audit.WithDevice(j.deviceID),
+				audit.WithResult(reason+"; not retried"))
+			reaped++
+			continue
+		}
 		retryAfter := backoff
 		if j.attempt > 1 {
 			retryAfter = s.minBackoff(j.attempt)
@@ -593,6 +669,7 @@ func (s *Service) Reap(ctx context.Context) (reaped int, err error) {
 		s.audit.Record(ctx, "scheduler", "job.reclaimed",
 			audit.WithDevice(j.deviceID),
 			audit.WithResult(fmt.Sprintf("re-queued, retry in %ds", retryAfter)))
+		reaped++
 	}
 
 	_, err = tx.Exec(ctx, `

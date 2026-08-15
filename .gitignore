@@ -2,3 +2,10 @@ target/
 
 # Deployment variables (may later hold TS_AUTHKEY).
 deploy/.env
+
+# Python caches and build outputs.
+scripts/__pycache__/
+
+# Operational Phase B transport-test evidence (large binaries/logs, not
+# source). Kept locally for the record, never tracked.
+results/phase-b/

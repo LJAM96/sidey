@@ -34,6 +34,24 @@ LC_BUILD_VERSION = 0x32
 PLATFORM_IOS = 2
 PLATFORM_TVOS = 3
 
+# Decompression-bomb guard: ipa sizes are already bounded by the upload cap,
+# but `extractall` of a hostile archive could still expand far beyond the
+# archive's own size. Bound the unpacked total and any single entry up front.
+MAX_ENTRY_BYTES = 2 << 30  # 2 GiB per file
+MAX_TOTAL_BYTES = 8 << 30  # 8 GiB unpacked archive
+
+
+def guard_zip_sizes(zf: zipfile.ZipFile) -> None:
+    total = 0
+    for info in zf.infolist():
+        if info.file_size > MAX_ENTRY_BYTES:
+            raise SystemExit(
+                f"refusing oversized zip entry {info.filename!r} ({info.file_size} bytes)"
+            )
+        total += info.file_size
+    if total > MAX_TOTAL_BYTES:
+        raise SystemExit(f"refusing oversized archive ({total} bytes unpacked)")
+
 
 def patch_info_plist(info_plist: Path, minimum_os: str) -> None:
     """Patch UIDeviceFamily / CFBundleSupportedPlatforms and DT* keys."""
@@ -123,6 +141,7 @@ def main() -> int:
     stage = Path(tempfile.mkdtemp(prefix="tvos-patch-"))
     try:
         with zipfile.ZipFile(src) as z:
+            guard_zip_sizes(z)
             z.extractall(stage)
 
         apps = find_app_dirs(stage)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -116,7 +117,11 @@ func (s *Server) handleCreateSignJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAgentDownloadArtifact lets agents fetch the original IPA of an
-// approved artifact (the signing worker needs the bytes to sign them).
+// approved artifact. Access is bound to job ownership: the caller must hold
+// an active job referencing the artifact — a sign job it claimed (signing
+// worker) or a job on a device it owns. A mere (stolen or shared) agent key
+// no longer grants access to arbitrary approved IPAs without an active job
+// establishing the right to the artifact.
 func (s *Server) handleAgentDownloadArtifact(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -134,6 +139,11 @@ func (s *Server) handleAgentDownloadArtifact(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "artifact is not approved"})
 		return
 	}
+	if !s.agentMayAccessArtifact(r, id) {
+		writeJSON(w, http.StatusForbidden,
+			map[string]any{"error": "no active job held by this agent references this artifact"})
+		return
+	}
 	path := s.artifacts.Path(sha256)
 	if !s.artifacts.Exists(sha256) {
 		s.writeError(w, http.StatusInternalServerError, "artifact blob missing")
@@ -144,6 +154,36 @@ func (s *Server) handleAgentDownloadArtifact(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeFile(w, r, path)
+}
+
+// agentMayAccessArtifact reports whether the caller holds an active job that
+// establishes the right to download the artifact: a claimed/in-progress sign
+// job for a signing worker, or a claimed/in-progress job on a device the
+// agent owns (device agents, refresh agents).
+func (s *Server) agentMayAccessArtifact(r *http.Request, artifactID uuid.UUID) bool {
+	agent := agentID(r.Context())
+	var bound bool
+	var err error
+	if s.agentRole(r, agent) == "signing_worker" {
+		err = s.pool.QueryRow(r.Context(), `
+			SELECT EXISTS (
+				SELECT 1 FROM jobs j
+				WHERE j.claimed_by = $1
+				  AND j.job_type = 'sign'
+				  AND j.state IN ('claimed', 'in_progress')
+				  AND j.parameters->>'artifact_id' = $2::text
+			)`, agent, artifactID).Scan(&bound)
+	} else {
+		err = s.pool.QueryRow(r.Context(), `
+			SELECT EXISTS (
+				SELECT 1 FROM jobs j
+				JOIN devices d ON d.id = j.device_id
+				WHERE d.agent_id = $1
+				  AND j.state IN ('claimed', 'in_progress')
+				  AND j.parameters->>'artifact_id' = $2::text
+			)`, agent, artifactID).Scan(&bound)
+	}
+	return err == nil && bound
 }
 
 type signedArtifactUploadRequest struct {
@@ -168,7 +208,14 @@ type signedArtifactUploadRequest struct {
 // hold the job (claimed_by), and the job must target the same device and
 // source artifact, or the upload is refused.
 func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Request) {
+	// Cap the whole request (multipart overhead included) so an oversized
+	// body cannot spill unbounded data to disk.
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxArtifactBytes)
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		if maxErr := (*http.MaxBytesError)(nil); errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "request body too large"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid multipart form"})
 		return
 	}
@@ -206,26 +253,18 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 	}
 	defer file.Close()
 
-	var preExisting bool
-	if req.SignedIPASha256 != "" {
-		preExisting = s.artifacts.Exists(req.SignedIPASha256)
-	}
-	computed, err := s.artifacts.Save(file)
+	// Stream to a temp file first; the signed-derivative record is inserted
+	// in the same transaction as its publication (under a per-hash advisory
+	// lock) so retention can never delete this blob between publication and
+	// the row commit.
+	computed, tmp, err := s.artifacts.SaveToTemp(file)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "storing signed ipa failed")
 		return
 	}
-	// Any failure from here on must not leave an unreferenced file behind;
-	// the signed_artifacts row is the only reference to it. Only remove files
-	// this upload created (content addressing may reuse an existing file).
-	fail := func(status int, message string) {
-		if !preExisting || req.SignedIPASha256 == "" || computed != req.SignedIPASha256 {
-			s.artifacts.Remove(computed)
-		}
-		s.writeError(w, status, message)
-	}
+	defer s.artifacts.DiscardTemp(tmp)
 	if req.SignedIPASha256 != "" && req.SignedIPASha256 != computed {
-		fail(http.StatusBadRequest, "signed_ipa_sha256 does not match uploaded file")
+		writeJSON(w, http.StatusBadRequest, "signed_ipa_sha256 does not match uploaded file")
 		return
 	}
 	sha256 := computed
@@ -234,7 +273,7 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 	if req.ProfileExpiryAt != "" {
 		t, err := time.Parse(time.RFC3339, req.ProfileExpiryAt)
 		if err != nil {
-			fail(http.StatusBadRequest, "profile_expiry_at must be RFC3339")
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "profile_expiry_at must be RFC3339"})
 			return
 		}
 		profileExpiry = &t
@@ -242,10 +281,29 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 
 	tx, err := s.pool.Begin(r.Context())
 	if err != nil {
-		fail(http.StatusInternalServerError, "transaction failed")
+		s.writeError(w, http.StatusInternalServerError, "transaction failed")
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtext($1))`, sha256); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "lock acquisition failed")
+		return
+	}
+	created, err := s.artifacts.Publish(sha256, tmp)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "storing signed ipa failed")
+		return
+	}
+	// Any failure from here on must not leave an unreferenced file behind. We
+	// still hold the advisory lock, so removal is race-free: no retention pass
+	// and no concurrent upload can observe or touch these bytes. Only remove
+	// what this request created; borrowed (pre-existing) blobs stay.
+	fail := func(status int, message string) {
+		if created {
+			s.artifacts.Remove(sha256)
+		}
+		s.writeError(w, status, message)
+	}
 
 	// Upsert the Apple account by team identifier.
 	var accountID uuid.UUID
@@ -299,12 +357,19 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 		fail(http.StatusInternalServerError, "signed artifact insert failed")
 		return
 	}
+	// The signed-derivative record is security sensitive (it is the artifact
+	// that gets installed on devices); its audit event commits in the same
+	// transaction so it cannot be lost independently of the record.
+	if err := audit.RecordTx(r.Context(), tx, "agent:"+agentID(r.Context()).String(),
+		"signed_artifact.uploaded",
+		audit.WithData(map[string]any{"signed_artifact_id": signedID, "sha256": sha256, "job_id": req.JobID})); err != nil {
+		fail(http.StatusInternalServerError, "audit write failed")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		fail(http.StatusInternalServerError, "transaction failed")
 		return
 	}
-	s.audit.Record(r.Context(), "agent:"+agentID(r.Context()).String(), "signed_artifact.uploaded",
-		audit.WithData(map[string]any{"signed_artifact_id": signedID, "sha256": sha256, "job_id": req.JobID}))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id": signedID, "sha256": sha256,
 	})

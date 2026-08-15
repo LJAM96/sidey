@@ -90,7 +90,7 @@ transport-spike --udid <UDID> validate
 
 ### 3.1 VPS only topology bootstrap (D13)
 
-With no edge host at home, pairing is bootstrapped once from any machine the phone can be plugged into. Preferred path (VirtualHere):
+With no local host in the default VPS deployment, pairing is bootstrapped once from any machine the phone can be plugged into. Preferred path (VirtualHere):
 
 1. Plug the phone into a machine running the VirtualHere server (or usbip); both machines must be on the tailnet. On the VPS, run the VirtualHere client so usbmuxd sees a virtual USB port.
 2. Pair through the agent as if the device were local:
@@ -101,7 +101,7 @@ transport-spike --udid <UDID> pair
 transport-spike --udid <UDID> validate
 ```
 
-3. The pairing record is stored in the agent vault on the VPS directly.
+3. The pairing record is stored in the device service vault on the VPS directly.
 
 Fallback path (record transfer), when VirtualHere is not available:
 
@@ -116,9 +116,9 @@ python3 - <<'EOF'
 EOF
 ```
 
-2. Transfer the record to the VPS (scp / tailscale serve / secret copy) and import it into the agent's pairing vault (vault path: `pairing-vault` volume, agent reads it at startup).
-3. The agent validates with `validate` (it uses the vault record instead of usbmuxd for TCP connections).
-4. The phone must be on the tailnet (Tailscale app or home subnet router) so the agent's Tailscale address reaches it.
+2. Transfer the record to the VPS (scp / tailscale serve / secret copy) and import it into the device service's pairing vault (vault path: `pairing-vault` volume, device service reads it at startup).
+3. The device service validates with `validate` (it uses the vault record instead of usbmuxd for TCP connections).
+4. The phone must be on the tailnet (Tailscale app or home subnet router) so the device service's Tailscale address reaches it.
 
 Once a record exists on the VPS, it survives only if backed up; losing it means another USB session on a local machine.
 
@@ -144,14 +144,14 @@ sudo systemctl restart usbmuxd
 ## 5. Apple TV
 
 1. Pairing for tvOS uses the local network discovery path (mDNS/Avahi) provided by the atvloadly derived helper (D1) — follow the atvloadly documented flow for the TV's pairing code entry.
-2. The edge host must run Avahi and be on the same LAN as the Apple TV; the discovery privileges stay in the edge container, never on the control plane.
+2. The device service must run Avahi and be on the same LAN as the Apple TV for initial pairing; the discovery privileges stay in the device service container, never on the control plane. Once the pair record exists, the service reaches the TV over the tailnet (RSD tunnel).
 
-## 6. Replacing a lost edge agent
+## 6. Replacing a lost device service
 
-1. Deploy a new edge host with the same Tailscale identity (restore the Tailscale state volume) or a new tailnet node.
+1. Deploy a replacement device service host (the VPS itself for same-host mode, or a fresh remote node) with the same Tailscale identity (restore the Tailscale state volume) or a new tailnet node.
 2. Restore the pairing state from the section 2.1 backup.
 3. Re-attach devices: for each device, run `validate`; devices whose records were lost are re-paired with section 3.
-4. Update the device records' `agent_id` in the control plane.
+4. Update the device records' assignment in the control plane.
 
 ## 7. Post-recovery checks
 

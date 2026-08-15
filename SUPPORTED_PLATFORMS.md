@@ -31,10 +31,10 @@ Exact floors must be recorded in this file when Phase B transport results land.
 
 | Host | Architecture | Role |
 |---|---|---|
-| Oracle Cloud VPS (AMD or ARM) | amd64, arm64 | Control plane (production) |
-| UGREEN NAS / Raspberry Pi / generic Linux | arm64/amd64 | Edge agent (production) |
-| macOS workstation | amd64/arm64 | Edge host option, development |
-| Ordinary Linux server | amd64/arm64 | Full stack single host |
+| Oracle Cloud VPS (AMD or ARM) | amd64, arm64 | Default full stack: control plane, signing worker, device service (production) |
+| UGREEN NAS / Raspberry Pi / generic Linux | arm64/amd64 | Optional remote node: device service on a second host |
+| macOS workstation | amd64/arm64 | Development host |
+| Ordinary Linux server | amd64/arm64 | Full stack single host (non-VPS alternative) |
 
 Docker images are published for linux/amd64 and linux/arm64 (plan "Image publishing").
 
