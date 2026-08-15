@@ -812,3 +812,117 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 }
+
+// handleStoreSourceJSON renders the AltStore / SideStore / LiveContainer compatible repository JSON.
+func (s *Server) handleStoreSourceJSON(w http.ResponseWriter, r *http.Request) {
+	apps, err := s.getCachedStoreApps()
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "failed to load store apps")
+		return
+	}
+
+	host := r.Host
+	proto := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		proto = "https"
+	}
+	baseURL := fmt.Sprintf("%s://%s", proto, host)
+
+	type AltVersion struct {
+		Version              string `json:"version"`
+		Date                 string `json:"date"`
+		DownloadURL          string `json:"downloadURL"`
+		Size                 int64  `json:"size"`
+		LocalizedDescription string `json:"localizedDescription,omitempty"`
+	}
+
+	type AltApp struct {
+		Name                 string         `json:"name"`
+		BundleIdentifier     string         `json:"bundleIdentifier"`
+		DeveloperName        string         `json:"developerName"`
+		Version              string         `json:"version"`
+		VersionDate          string         `json:"versionDate"`
+		VersionDescription   string         `json:"versionDescription,omitempty"`
+		DownloadURL          string         `json:"downloadURL"`
+		LocalizedDescription string         `json:"localizedDescription"`
+		IconURL              string         `json:"iconURL"`
+		TintColor            string         `json:"tintColor,omitempty"`
+		Size                 int64          `json:"size"`
+		Versions             []AltVersion   `json:"versions,omitempty"`
+		AppPermissions       map[string]any `json:"appPermissions,omitempty"`
+	}
+
+	type AltSource struct {
+		Name        string   `json:"name"`
+		Identifier  string   `json:"identifier"`
+		Subtitle    string   `json:"subtitle,omitempty"`
+		Description string   `json:"description,omitempty"`
+		IconURL     string   `json:"iconURL,omitempty"`
+		Website     string   `json:"website,omitempty"`
+		Apps        []AltApp `json:"apps"`
+	}
+
+	var altApps []AltApp
+	for _, app := range apps {
+		var versions []AltVersion
+		for _, v := range app.Versions {
+			dlURL := v.DownloadURL
+			if strings.HasPrefix(dlURL, "/") {
+				dlURL = baseURL + dlURL
+			}
+			versions = append(versions, AltVersion{
+				Version:              v.Version,
+				Date:                 v.UpdatedDate,
+				DownloadURL:          dlURL,
+				Size:                 v.Size,
+				LocalizedDescription: fmt.Sprintf("%s %s (%s)", app.Name, v.Version, v.Channel),
+			})
+		}
+		mainDL := app.DownloadURL
+		if strings.HasPrefix(mainDL, "/") {
+			mainDL = baseURL + mainDL
+		}
+		icon := app.IconURL
+		if strings.HasPrefix(icon, "/") {
+			icon = baseURL + icon
+		}
+
+		bundleID := app.BundleID
+		if bundleID == "" {
+			bundleID = "com.sidey.store." + strings.ToLower(strings.ReplaceAll(app.Name, " ", ""))
+		}
+
+		altApps = append(altApps, AltApp{
+			Name:                 app.Name,
+			BundleIdentifier:     bundleID,
+			DeveloperName:        app.Developer,
+			Version:              app.Version,
+			VersionDate:          app.UpdatedDate,
+			VersionDescription:   app.Description,
+			DownloadURL:          mainDL,
+			LocalizedDescription: app.Description,
+			IconURL:              icon,
+			TintColor:            "388BFD",
+			Size:                 app.Size,
+			Versions:             versions,
+			AppPermissions: map[string]any{
+				"entitlements": []string{},
+				"privacy":      map[string]any{},
+			},
+		})
+	}
+
+	source := AltSource{
+		Name:        "Sidey App Store",
+		Identifier:  "com.sidey.store",
+		Subtitle:    "Self-Hosted Sideloading Catalog",
+		Description: "Your self-hosted Sidey App Store repository with community apps, games, media, and tools.",
+		IconURL:     baseURL + "/icons/icon-192.png",
+		Website:     baseURL,
+		Apps:        altApps,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	_ = json.NewEncoder(w).Encode(source)
+}

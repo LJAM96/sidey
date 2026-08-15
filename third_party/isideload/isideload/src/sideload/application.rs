@@ -252,6 +252,7 @@ impl Application {
                 | SpecialApp::SideStore
                 | SpecialApp::AltStore
                 | SpecialApp::StikStore
+                | SpecialApp::LiveContainer
         ) {
             if !matches!(special, SpecialApp::StikStore) {
                 self.bundle.app_info.insert(
@@ -274,9 +275,10 @@ impl Application {
                     SpecialApp::StikStore => "MachineID",
                     _ => "ALTCertificateID",
                 };
-                let cert_file_name = match special {
-                    SpecialApp::StikStore => "Certificate.p12",
-                    _ => "ALTCertificate.p12",
+                let cert_file_names: Vec<&str> = match special {
+                    SpecialApp::StikStore => vec!["Certificate.p12"],
+                    SpecialApp::LiveContainer => vec!["ALTCertificate.p12", "Certificate.p12"],
+                    _ => vec!["ALTCertificate.p12"],
                 };
                 target_bundle.app_info.insert(
                     id_key.to_string(),
@@ -287,14 +289,16 @@ impl Application {
                     .as_p12(&cert.machine_id)
                     .await
                     .context("Failed to encode cert as p12")?;
-                let alt_cert_path = target_bundle.bundle_dir.join(cert_file_name);
 
-                let mut file = tokio::fs::File::create(&alt_cert_path)
-                    .await
-                    .context(format!("Failed to create {}", cert_file_name))?;
-                file.write_all(&p12_bytes)
-                    .await
-                    .context(format!("Failed to write {}", cert_file_name))?;
+                for cert_file_name in cert_file_names {
+                    let alt_cert_path = target_bundle.bundle_dir.join(cert_file_name);
+                    let mut file = tokio::fs::File::create(&alt_cert_path)
+                        .await
+                        .context(format!("Failed to create {}", cert_file_name))?;
+                    file.write_all(&p12_bytes)
+                        .await
+                        .context(format!("Failed to write {}", cert_file_name))?;
+                }
             }
         }
         Ok(())

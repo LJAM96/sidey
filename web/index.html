@@ -585,7 +585,9 @@
   <section class="card">
     <div class="card-title">
       <span>App Catalog & Store (AltStore & GitHub Sources)</span>
-      <div style="display:flex; gap:8px; align-items:center;">
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button class="btn btn-sm" onclick="copySourceURL()" title="Copy AltStore/LiveContainer repository JSON URL">📋 Copy Store JSON</button>
+        <button class="btn btn-sm" onclick="addAltStoreSource()" title="Open AltStore / SideStore with this source">➕ Add to AltStore</button>
         <button class="btn btn-sm" onclick="fetchStoreApps(true)">↻ Refresh Store</button>
         <button class="btn btn-sm btn-primary" onclick="openAddSourceModal()">+ Add Source / GitHub</button>
       </div>
@@ -1077,6 +1079,24 @@ sideloadBtn.onclick = async () => {
 // -------------------------------------------------------------
 // App Store & Catalog Fetching & Actions
 // -------------------------------------------------------------
+function copySourceURL() {
+  const sourceURL = `${window.location.origin}/api/v1/store/source.json`;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(sourceURL).then(() => {
+      alert(`Sidey Store JSON URL copied to clipboard:\n\n${sourceURL}\n\nYou can add this URL to LiveContainer, SideStore, or AltStore as an App Source.`);
+    }).catch(() => {
+      prompt("Copy Sidey Store Source URL:", sourceURL);
+    });
+  } else {
+    prompt("Copy Sidey Store Source URL:", sourceURL);
+  }
+}
+
+function addAltStoreSource() {
+  const sourceURL = encodeURIComponent(`${window.location.origin}/api/v1/store/source.json`);
+  window.location.href = `altstore://source?url=${sourceURL}`;
+}
+
 async function fetchStoreApps(forceRefresh = false) {
   const grid = document.getElementById("storeGrid");
   const countEl = document.getElementById("storeAppCount");
