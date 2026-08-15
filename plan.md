@@ -1065,8 +1065,11 @@ Second D13 proof run completed 2026-08-07 (usb mode + rsd mode, both PASS):
     downstream lookups
   - D13 verdict: direct Oracle-to-device communication viable; proceed with
     the device agent on the VPS
-Remaining Phase B: locked/restart scenarios, Apple TV via atvloadly (+ tvOS
-signing, DEVICE_TYPE now supported by signonly).
+Remaining Phase B: locked/restart scenarios. Apple TV over tailnet was
+proven in Phase G (2026-08-09): remote pairing over the tailnet, RSD tunnel
+and tvOS-family install from the VPS; `DEVICE_TYPE` (ios|tvos|watchos) is
+supported by signonly but tvOS device registration 404s in isideload and
+works through plumesign (see Phase G status).
 ```
 
 ### Exit criteria
@@ -1284,6 +1287,57 @@ The control plane can distinguish authentication, certificate, provisioning, ent
 ### Objective
 
 Deliver a working platform using the most mature server based path first.
+
+Status 2026-08-09: live proof completed on the Oracle VPS (oi-3) against the
+house Apple TV 4K (tvOS 27.0, build 24J5325d, UDID
+0bdb14cd0425063276fdb12021cac957277d6ebd) over Tailscale. Manual
+RemotePairing (PIN) over the tailnet produced a working pair record
+(`remote_CA97E7C4-DF76-4CB3-B4FD-79D0CE6B3C8C.plist` on oi-3); pair verify,
+TCP tunnel and RSD connect all succeed with it (`os=27.0 build=24J5325d`).
+Findings that constrain the provider implementation:
+
+- The pairing record is network-scoped: a record created over the LAN (on
+  the NAS) is rejected by verify over the tailnet (`ERROR 0x02`). The record
+  must be created from the host that will install (or refreshed there).
+- `create_core_device_tunnel_service_using_remotepairing` (autopair=True)
+  hung in the install path; the working flow is
+  `RemotePairingTunnelService.connect(autopair=False)` then
+  `start_tunnel_over_remotepairing(..., protocol=TCP)` then
+  `InstallationProxyService(lockdown=rsd).install_from_local()`.
+- plumesign's own pair-verify of the pmd3-format record fails ("Pair verify
+  failed"), so plumesign is used for registration/signing only, never its
+  `sign-rsd --pairing-file` install path on this TV firmware.
+- tvOS signing needs three things the stock isideload flow does not do:
+  `UIDeviceFamily [3]`, `CFBundleSupportedPlatforms [TVOS]` in Info.plist
+  and Mach-O `LC_BUILD_VERSION` platform 3 (installd rejects
+  `[iOS, arm64]` binaries even when the profile/family are patched).
+- isideload's tvOS device registration 404s
+  (`tvos/listDevices.action`); plumesign registers the TV correctly
+  (`device_class: tvOS`, id `YCFSW9BS7J`, team A7VT6RU6XK).
+- The tunnel needs root for the TUN device; pair-verify/install run as an
+  unprivileged user.
+
+Result: `test-v2-tvsign2.ipa` (patched family/platform, re-signed with the
+team's development certificate) installed over the tailnet tunnel and is
+present on the TV (`org.sidey.phasetest.A7VT6RU6XK`, verified via
+`get_apps`).
+
+Status 2026-08-15: the proven flow is now implemented in the repo. The Go
+helper's `deploy` verb delegates to `scripts/tvos-install.sh` (patch → sign
+via plumesign → pmd3 tunnel + InstallationProxy install → get_apps verify)
+when `SIDEY_TVOS_SCRIPTS_DIR` is set, instead of the fork's `sign-rsd` path;
+`scripts/tvos-patch-ipa.py`, `scripts/tvos-tunnel.py` and
+`scripts/tvos-install.py` encode the findings above as first-class scripts,
+and `rust/tvos-provider` passes a RemotePairing `identifier` through the
+deploy request (the TV's identifier differs from its UDID). Verified: helper
+builds and vets (go 1.25, oi-3), Rust provider builds/clippy-clean, and the
+delegated deploy saves the install record centrally.
+
+Remaining: plumesign `sign-rsd` parity for the install step (only if we ever
+want to drop the pmd3 dependency), uninstall/upgrade over the tunnel wiring,
+the discovery (mDNS/Avahi) wiring into the device records, the refresh cycle
+(Phase I) driven through the same `tvos-install.sh --refresh` path, and
+end-to-end regression of `tvos-install.sh` against the TV on the VPS.
 
 ### Work
 

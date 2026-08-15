@@ -1,0 +1,67 @@
+package app
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+
+	"github.com/bitxeno/atvloadly/internal/db"
+)
+
+var (
+	Config *Configuration
+)
+
+// configuration holds any kind of configuration that comes from the outside world and
+// is necessary for running the application.
+type Configuration struct {
+	App struct {
+		DeveloperDiskImage struct {
+			ImageSource string `koanf:"image_source" json:"image_source" default:"https://raw.githubusercontent.com/bitxeno/DeveloperDiskImages/main"`
+			CNProxy     string `koanf:"cn_proxy" json:"cn_proxy" default:"https://mirror.ghproxy.com"`
+		} `koanf:"developer_disk_image" json:"developer_disk_image"`
+	} `koanf:"app" json:"app"`
+
+	Log struct {
+		Level      string `koanf:"level" default:"info"`
+		TimeFormat string `koanf:"time_format" default:"2006-01-02 15:04:05.000"`
+		LogFile    string `koanf:"log_file"`
+		AccessLog  string `koanf:"access_log"`
+	} `koanf:"log" json:"log"`
+
+	Server struct {
+		ListenAddr string `koanf:"listen_addr" default:"0.0.0.0"`
+		Port       int    `koanf:"port" default:"9000"`
+		DataDir    string `koanf:"work_dir"`
+	} `koanf:"server" json:"server"`
+
+	Db db.Config `koanf:"db" json:"db"`
+}
+
+func SideloadDataDir() string {
+	if home, err := os.UserHomeDir(); err != nil {
+		return "~/.config/PlumeImpactor"
+	} else {
+		return fmt.Sprintf("%s/.config/PlumeImpactor", home)
+	}
+}
+
+func LockdownDir() string {
+	switch runtime.GOOS {
+	case "darwin":
+		homeDir, _ := os.UserHomeDir()
+		return filepath.Join(homeDir, "/.config/atvloadly/lockdown")
+	case "windows":
+		if programData := os.Getenv("ProgramData"); programData != "" {
+			return filepath.Join(programData, "Apple", "Lockdown")
+		}
+		return `C:\ProgramData\Apple\Lockdown`
+	default:
+		return "/var/lib/lockdown"
+	}
+}
+
+func RemotePairingDir() string {
+	return filepath.Join(SideloadDataDir(), "pairing_files")
+}

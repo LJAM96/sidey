@@ -1,0 +1,18 @@
+[package]
+name = "tvos-provider"
+version = "0.1.0"
+edition = "2021"
+description = "Sidey TVOSProvider: DeviceProvider over the Go sidey-tvos-helper subprocess JSON protocol"
+
+[dependencies]
+device-provider = { path = "../device-provider" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "tvos-cli"
+path = "src/bin/tvos-cli.rs"
+
+[profile.release]
+lto = true

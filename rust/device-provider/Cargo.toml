@@ -1,0 +1,11 @@
+[package]
+name = "device-provider"
+version = "0.1.0"
+edition = "2021"
+description = "Sidey DeviceProvider trait (ADR-0005): the only boundary the device agent core knows"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+lto = true
