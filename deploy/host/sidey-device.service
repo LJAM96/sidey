@@ -35,8 +35,6 @@ Group=sidey
 UMask=0007
 StateDirectory=sidey
 StateDirectoryMode=0770
-RuntimeDirectory=sidey
-RuntimeDirectoryMode=0770
 
 [Install]
 WantedBy=multi-user.target
