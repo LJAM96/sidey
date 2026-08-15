@@ -1,12 +1,8 @@
 package api
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -153,7 +149,6 @@ func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Type == "github" {
-		// Clean up github URLs to owner/repo
 		req.URL = strings.TrimPrefix(req.URL, "https://github.com/")
 		req.URL = strings.TrimPrefix(req.URL, "http://github.com/")
 		req.URL = strings.TrimSuffix(req.URL, "/")
@@ -173,7 +168,6 @@ func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
 		IsDefault: false,
 	}
 
-	// Load existing custom
 	var custom []StoreSource
 	path := "/var/lib/sidey/store_sources.json"
 	if data, err := os.ReadFile(path); err == nil {
@@ -182,7 +176,6 @@ func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
 	custom = append(custom, newSrc)
 	_ = s.saveCustomSources(custom)
 
-	// Invalidate cache
 	globalStoreCache.Lock()
 	globalStoreCache.apps = nil
 	globalStoreCache.Unlock()
@@ -281,7 +274,6 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 	req.Header.Set("User-Agent", "Sidey-AltStore-Client/1.0")
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		// Try root url if apps.json failed
 		if url != src.URL {
 			req2, _ := http.NewRequest("GET", src.URL, nil)
 			req2.Header.Set("User-Agent", "Sidey-AltStore-Client/1.0")
@@ -300,15 +292,15 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 	var sourceData struct {
 		Name string `json:"name"`
 		Apps []struct {
-			Name                string `json:"name"`
-			BundleIdentifier    string `json:"bundleIdentifier"`
-			DeveloperName       string `json:"developerName"`
-			Version             string `json:"version"`
-			VersionDate         string `json:"versionDate"`
+			Name                 string `json:"name"`
+			BundleIdentifier     string `json:"bundleIdentifier"`
+			DeveloperName        string `json:"developerName"`
+			Version              string `json:"version"`
+			VersionDate          string `json:"versionDate"`
 			LocalizedDescription string `json:"localizedDescription"`
-			IconURL             string `json:"iconURL"`
-			DownloadURL         string `json:"downloadURL"`
-			Size                int64  `json:"size"`
+			IconURL              string `json:"iconURL"`
+			DownloadURL          string `json:"downloadURL"`
+			Size                 int64  `json:"size"`
 		} `json:"apps"`
 	}
 
@@ -433,8 +425,8 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 		req.Mode = "livecontainer"
 	}
 
-	// 1. Download remote IPA to temporary file
-	client := &http.Client{Timeout: 60 * time.Second}
+	// 1. Download remote IPA stream to temp
+	client := &http.Client{Timeout: 90 * time.Second}
 	dlReq, err := http.NewRequest("GET", req.DownloadURL, nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid download url"})
@@ -448,27 +440,16 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dlResp.Body.Close()
 
-	tmpFile, err := os.CreateTemp("", "store-download-*.ipa")
+	sha256Hex, tmp, err := s.artifacts.SaveToTemp(dlResp.Body)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "temp file creation failed")
+		s.writeError(w, http.StatusInternalServerError, "storing download failed")
 		return
 	}
-	defer os.Remove(tmpFile.Name())
-
-	hasher := sha256.New()
-	reader := io.TeeReader(dlResp.Body, hasher)
-	size, err := io.Copy(tmpFile, reader)
-	tmpFile.Close()
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "download copy failed")
-		return
-	}
-	shaHex := hex.EncodeToString(hasher.Sum(nil))
+	defer s.artifacts.DiscardTemp(tmp)
 
 	// 2. Inspect downloaded IPA
-	meta, err := artifacts.Inspect(tmpFile.Name())
-	if err != nil {
-		// Fallback metadata if inspection fails
+	meta, metaErr := artifacts.Inspect(tmp)
+	if metaErr != nil {
 		meta = &artifacts.Metadata{
 			BundleIdentifier: "com.sidey.storeapp",
 			Version:          "1.0",
@@ -477,11 +458,11 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. Move into Sidey artifact storage
-	artifactID := uuid.New()
-	targetPath := filepath.Join(s.artifactsDir, artifactID.String()+".ipa")
-	if err := os.MkdirAll(s.artifactsDir, 0o755); err == nil {
-		_ = os.Rename(tmpFile.Name(), targetPath)
+	// 3. Publish into content-addressed store
+	_, err = s.artifacts.Publish(sha256Hex, tmp)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "publishing artifact failed")
+		return
 	}
 
 	filename := req.Name
@@ -490,12 +471,17 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Save artifact in database
-	_, err = s.pool.Exec(r.Context(), `
-		INSERT INTO artifacts (id, filename, bundle_identifier, version, platform, size_bytes, sha256, quarantine_state, state_changed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'approved', now())`,
-		artifactID, filename, meta.BundleIdentifier, meta.Version, meta.Platform, size, shaHex)
+	var artifactID uuid.UUID
+	err = s.pool.QueryRow(r.Context(), `
+		INSERT INTO artifacts (sha256, filename, bundle_identifier, version, platform, quarantine_state, state_changed_at)
+		VALUES ($1, $2, $3, $4, $5, 'approved', now())
+		ON CONFLICT (sha256) DO UPDATE SET
+			quarantine_state = 'approved',
+			state_changed_at = now()
+		RETURNING id`,
+		sha256Hex, filename, meta.BundleIdentifier, meta.Version, meta.Platform).Scan(&artifactID)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "artifact database insert failed")
+		s.writeError(w, http.StatusInternalServerError, "artifact database upsert failed")
 		return
 	}
 
