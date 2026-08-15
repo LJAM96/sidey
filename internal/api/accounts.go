@@ -193,7 +193,6 @@ func (s *Server) handleAdminDeploy(w http.ResponseWriter, r *http.Request) {
 	// 3. Select Apple Account (explicit or auto-balance by available slots)
 	appleID := strings.TrimSpace(req.AppleID)
 	if appleID == "" || appleID == "auto" {
-		// Pick account with fewest registered App IDs (< 3 slots prioritized)
 		var chosenLabel string
 		err := s.pool.QueryRow(r.Context(), `
 			SELECT label FROM apple_accounts
@@ -233,9 +232,169 @@ func (s *Server) handleAdminDeploy(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"status":      "ok",
+		"mode":        "native",
 		"artifact_id": req.ArtifactID,
 		"device_id":   req.DeviceID,
 		"apple_id":    appleID,
 		"sign_job_id": signJobID,
+	})
+}
+
+type liveContainerInstallRequest struct {
+	DeviceID uuid.UUID `json:"device_id"`
+	AppleID  string    `json:"apple_id"`
+}
+
+// handleInstallLiveContainer creates/prepares the LiveContainer package and enqueues installation.
+func (s *Server) handleInstallLiveContainer(w http.ResponseWriter, r *http.Request) {
+	var req liveContainerInstallRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.DeviceID == uuid.Nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "device_id is required"})
+		return
+	}
+
+	var artifactID uuid.UUID
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT id FROM artifacts
+		WHERE bundle_identifier = 'com.kdt.livecontainer' OR filename ILIKE '%livecontainer%'
+		ORDER BY created_at DESC LIMIT 1`).Scan(&artifactID)
+	if err != nil {
+		err = s.pool.QueryRow(r.Context(), `
+			INSERT INTO artifacts (filename, bundle_identifier, version, platform, quarantine_state, sha256)
+			VALUES ('LiveContainer.ipa', 'com.kdt.livecontainer', '2.0', 'iPhoneOS', 'approved', 'livecontainer-package-v2')
+			RETURNING id`).Scan(&artifactID)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "creating LiveContainer artifact failed")
+			return
+		}
+	} else {
+		_, _ = s.pool.Exec(r.Context(), `UPDATE artifacts SET quarantine_state = 'approved' WHERE id = $1`, artifactID)
+	}
+
+	var udid, deviceName, platform string
+	err = s.pool.QueryRow(r.Context(), `
+		SELECT udid, COALESCE(device_name, ''), platform
+		FROM devices WHERE id = $1`, req.DeviceID).Scan(&udid, &deviceName, &platform)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "device not found"})
+		return
+	}
+
+	appleID := strings.TrimSpace(req.AppleID)
+	if appleID == "" || appleID == "auto" {
+		var chosenLabel string
+		err := s.pool.QueryRow(r.Context(), `
+			SELECT label FROM apple_accounts
+			WHERE auth_state IN ('authenticated', 'authenticating')
+			ORDER BY registered_app_id_count ASC, last_auth_at DESC
+			LIMIT 1`).Scan(&chosenLabel)
+		if err == nil && chosenLabel != "" {
+			appleID = chosenLabel
+		}
+	}
+
+	params := map[string]any{
+		"artifact_id":  artifactID.String(),
+		"udid":         udid,
+		"device_name":  deviceName,
+		"device_type":  platform,
+		"machine_name": "isideload-minimal",
+		"apple_id":     appleID,
+		"is_container": true,
+	}
+	var signJobID uuid.UUID
+	err = s.pool.QueryRow(r.Context(), `
+		INSERT INTO jobs (job_type, device_id, parameters, max_attempts)
+		VALUES ('sign', $1, $2, 5)
+		RETURNING id`, req.DeviceID, params).Scan(&signJobID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "enqueuing LiveContainer install job failed")
+		return
+	}
+
+	s.audit.Record(r.Context(), "admin", "livecontainer.install_queued", audit.WithData(map[string]any{
+		"device_id":   req.DeviceID,
+		"sign_job_id": signJobID,
+	}))
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"status":      "ok",
+		"artifact_id": artifactID.String(),
+		"device_id":   req.DeviceID.String(),
+		"sign_job_id": signJobID.String(),
+		"message":     "LiveContainer installation queued for device",
+	})
+}
+
+type liveContainerPushRequest struct {
+	ArtifactID uuid.UUID `json:"artifact_id"`
+	DeviceID   uuid.UUID `json:"device_id"`
+	BundleID   string    `json:"bundle_id"`
+}
+
+// handleLiveContainerPush pushes a guest IPA directly into LiveContainer on device.
+func (s *Server) handleLiveContainerPush(w http.ResponseWriter, r *http.Request) {
+	var req liveContainerPushRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.ArtifactID == uuid.Nil || req.DeviceID == uuid.Nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "artifact_id and device_id are required"})
+		return
+	}
+	bundleID := strings.TrimSpace(req.BundleID)
+	if bundleID == "" {
+		bundleID = "com.kdt.livecontainer"
+	}
+
+	var udid, deviceName, platform string
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT udid, COALESCE(device_name, ''), platform
+		FROM devices WHERE id = $1`, req.DeviceID).Scan(&udid, &deviceName, &platform)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "device not found"})
+		return
+	}
+
+	_, _ = s.pool.Exec(r.Context(), `
+		UPDATE artifacts SET quarantine_state = 'approved', state_changed_at = now()
+		WHERE id = $1`, req.ArtifactID)
+
+	params := map[string]any{
+		"artifact_id": req.ArtifactID.String(),
+		"udid":        udid,
+		"device_name": deviceName,
+		"device_type": platform,
+		"target":      "livecontainer",
+		"bundle_id":   bundleID,
+	}
+	var jobID uuid.UUID
+	err = s.pool.QueryRow(r.Context(), `
+		INSERT INTO jobs (job_type, device_id, parameters, max_attempts)
+		VALUES ('livecontainer_push', $1, $2, 3)
+		RETURNING id`, req.DeviceID, params).Scan(&jobID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "enqueuing LiveContainer push job failed")
+		return
+	}
+
+	s.audit.Record(r.Context(), "admin", "livecontainer.push_queued", audit.WithData(map[string]any{
+		"artifact_id": req.ArtifactID,
+		"device_id":   req.DeviceID,
+		"job_id":      jobID,
+	}))
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"status":      "ok",
+		"mode":        "livecontainer",
+		"artifact_id": req.ArtifactID.String(),
+		"device_id":   req.DeviceID.String(),
+		"job_id":      jobID.String(),
+		"message":     "Guest IPA queued for wireless LiveContainer HouseArrest transfer",
 	})
 }

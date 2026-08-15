@@ -164,7 +164,7 @@
   .drop-zone {
     border: 2px dashed var(--surface-border);
     border-radius: var(--radius-md);
-    padding: 24px;
+    padding: 20px;
     text-align: center;
     background: var(--bg);
     cursor: pointer;
@@ -173,28 +173,66 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    min-height: 120px;
+    gap: 6px;
+    min-height: 110px;
   }
   .drop-zone.dragover {
     border-color: var(--accent);
     background: var(--accent-subtle);
   }
   .drop-icon {
-    font-size: 28px;
+    font-size: 26px;
     color: var(--text-muted);
   }
   .drop-text {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
   }
   .drop-hint {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-muted);
   }
 
-  .form-row {
+  .mode-selector-box {
     margin-top: 14px;
+    background: var(--bg);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .mode-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+    padding: 6px 8px;
+    border-radius: 4px;
+    transition: background 0.15s ease;
+  }
+  .mode-option:hover {
+    background: var(--surface-elevated);
+  }
+  .mode-option input[type="radio"] {
+    margin-top: 3px;
+  }
+  .mode-title {
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .mode-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+
+  .form-row {
+    margin-top: 12px;
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
@@ -379,6 +417,31 @@
         <div class="drop-hint">Accepts standard iOS & tvOS IPA archives</div>
       </div>
 
+      <!-- Installation Target Mode Prompt -->
+      <div class="mode-selector-box">
+        <label class="mode-option">
+          <input type="radio" name="deployMode" value="native" checked onchange="handleModeChange()">
+          <div>
+            <div class="mode-title">
+              <span>Home Screen App (Native)</span>
+              <span id="nativeSlotsBadge" class="badge badge-neutral" style="font-size:10px;">Uses 1 Slot</span>
+            </div>
+            <div class="mode-desc">Signs with your Apple Developer account. Appears natively on your iOS / tvOS Home Screen.</div>
+          </div>
+        </label>
+
+        <label class="mode-option">
+          <input type="radio" name="deployMode" value="livecontainer" onchange="handleModeChange()">
+          <div>
+            <div class="mode-title">
+              <span>LiveContainer Guest App (Unlimited)</span>
+              <span class="badge badge-success" style="font-size:10px;">0 Slots Used</span>
+            </div>
+            <div class="mode-desc">Transfers directly into LiveContainer on your device. Runs unlimited guest apps without Apple signing limits.</div>
+          </div>
+        </label>
+      </div>
+
       <div class="form-row">
         <div>
           <label class="input-label">Target Device</label>
@@ -386,7 +449,7 @@
             <option value="">Loading connected devices...</option>
           </select>
         </div>
-        <div>
+        <div id="accountSelectWrapper">
           <label class="input-label">Signing Apple Account</label>
           <select id="targetAccountSelect" class="select-input">
             <option value="auto">Auto (Choose account with open slots)</option>
@@ -402,19 +465,19 @@
       <div id="progressTracker" class="progress-tracker">
         <div class="step-row" id="step1">
           <div class="step-status" id="step1Status">1</div>
-          <span>1. Upload source IPA archive to Control Plane</span>
+          <span id="step1Label">1. Upload source IPA archive to Control Plane</span>
         </div>
         <div class="step-row" id="step2">
           <div class="step-status" id="step2Status">2</div>
-          <span>2. Approve artifact & check quarantine state</span>
+          <span id="step2Label">2. Verify artifact & quarantine state</span>
         </div>
         <div class="step-row" id="step3">
           <div class="step-status" id="step3Status">3</div>
-          <span>3. Sign with selected Apple Account Certificate & profile</span>
+          <span id="step3Label">3. Sign with selected Apple Account Certificate & profile</span>
         </div>
         <div class="step-row" id="step4">
           <div class="step-status" id="step4Status">4</div>
-          <span>4. Deploy to device via wireless RSD tunnel / USB</span>
+          <span id="step4Label">4. Deploy to device via wireless RSD tunnel / USB</span>
         </div>
       </div>
     </div>
@@ -423,7 +486,10 @@
     <div class="card">
       <div class="card-title">
         <span>Apple Developer Accounts</span>
-        <button class="btn btn-sm btn-primary" onclick="openAddAccountModal()">+ Add Account</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-sm" onclick="openLiveContainerModal()">⚡ Install LiveContainer</button>
+          <button class="btn btn-sm btn-primary" onclick="openAddAccountModal()">+ Add Account</button>
+        </div>
       </div>
 
       <div id="accountsList" style="display:flex; flex-direction:column; gap:12px;">
@@ -431,7 +497,11 @@
       </div>
 
       <div class="guide-box" style="margin-top:14px;">
-        <strong>Bypass 3-App Limit:</strong> Connect multiple free Apple Developer IDs above, or install <strong>LiveContainer</strong> to run unlimited guest apps within a single signed container.
+        <strong>Bypass 3-App Limit:</strong>
+        <ul style="margin-left: 18px; margin-top: 4px;">
+          <li><strong>Multi-Account</strong>: Add secondary Apple IDs above (3 native apps per account).</li>
+          <li><strong>LiveContainer</strong>: Click <strong>⚡ Install LiveContainer</strong> to run unlimited guest apps within a single container without using any extra Apple slots!</li>
+        </ul>
       </div>
     </div>
   </div>
@@ -615,6 +685,33 @@
   </div>
 </div>
 
+<!-- Install LiveContainer Modal -->
+<div id="liveContainerModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(4px);">
+  <div style="background:var(--surface); border:1px solid var(--surface-border); border-radius:var(--radius-lg); width:100%; max-width:460px; padding:24px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <div style="font-size:16px; font-weight:600;">⚡ 1-Click Install LiveContainer</div>
+      <button style="background:none; border:none; color:var(--text-muted); font-size:22px; cursor:pointer;" onclick="closeLiveContainerModal()">&times;</button>
+    </div>
+    <p style="font-size:13px; color:var(--text-secondary); line-height:1.5; margin-bottom:14px;">
+      LiveContainer lets you run unlimited guest apps inside iOS without consuming additional Apple Developer slots. Sidey will sign and deploy LiveContainer to your device.
+    </p>
+    <form id="installLcForm" class="account-form">
+      <div>
+        <label class="input-label">Target Device</label>
+        <select id="lcDeviceSelect" class="select-input" required></select>
+      </div>
+      <div>
+        <label class="input-label">Signing Account</label>
+        <select id="lcAccountSelect" class="select-input"></select>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:10px;">
+        <button type="button" class="btn" onclick="closeLiveContainerModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Sign & Install LiveContainer</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script>
 let selectedFile = null;
 let liveDevices = [];
@@ -646,7 +743,7 @@ function fmtDate(d) {
 }
 
 // -------------------------------------------------------------
-// Sideload Drag & Drop Handling
+// Sideload Drag & Drop & Mode Handling
 // -------------------------------------------------------------
 const dropZone = document.getElementById("dropZone");
 const ipaFileInput = document.getElementById("ipaFileInput");
@@ -654,6 +751,7 @@ const fileLabel = document.getElementById("fileLabel");
 const sideloadBtn = document.getElementById("sideloadBtn");
 const targetDeviceSelect = document.getElementById("targetDeviceSelect");
 const targetAccountSelect = document.getElementById("targetAccountSelect");
+const accountSelectWrapper = document.getElementById("accountSelectWrapper");
 
 dropZone.onclick = () => ipaFileInput.click();
 dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add("dragover"); };
@@ -681,10 +779,50 @@ function handleFileSelected(file) {
   checkSideloadReady();
 }
 
+function getSelectedMode() {
+  const radios = document.getElementsByName("deployMode");
+  for (const r of radios) {
+    if (r.checked) return r.value;
+  }
+  return "native";
+}
+
+function handleModeChange() {
+  const mode = getSelectedMode();
+  if (mode === "livecontainer") {
+    accountSelectWrapper.style.display = "none";
+    sideloadBtn.textContent = "Push & Install into LiveContainer (0 Slots Used)";
+  } else {
+    accountSelectWrapper.style.display = "block";
+    sideloadBtn.textContent = "Sign & Sideload as Native App (Uses 1 Slot)";
+  }
+  checkSideloadReady();
+}
+
 targetDeviceSelect.onchange = checkSideloadReady;
+targetAccountSelect.onchange = updateSlotIndicators;
 
 function checkSideloadReady() {
   sideloadBtn.disabled = !(selectedFile && targetDeviceSelect.value);
+}
+
+function updateSlotIndicators() {
+  const selectedLabel = targetAccountSelect.value;
+  const badge = document.getElementById("nativeSlotsBadge");
+  if (!badge) return;
+
+  if (selectedLabel === "auto") {
+    badge.textContent = "Auto-Routes to Free Slot";
+    badge.className = "badge badge-neutral";
+    return;
+  }
+  const acc = liveAccounts.find(a => a.label === selectedLabel);
+  if (acc) {
+    const used = acc.registered_app_id_count || 0;
+    const remaining = Math.max(0, 3 - used);
+    badge.textContent = `${remaining}/3 Slots Free`;
+    badge.className = "badge " + (remaining > 0 ? "badge-success" : "badge-error");
+  }
 }
 
 // -------------------------------------------------------------
@@ -693,6 +831,7 @@ function checkSideloadReady() {
 sideloadBtn.onclick = async () => {
   if (!selectedFile || !targetDeviceSelect.value) return;
 
+  const mode = getSelectedMode();
   const deviceId = targetDeviceSelect.value;
   const chosenAccount = targetAccountSelect.value;
   const progressBox = document.getElementById("progressTracker");
@@ -704,15 +843,26 @@ sideloadBtn.onclick = async () => {
   const step3Status = document.getElementById("step3Status");
   const step4Status = document.getElementById("step4Status");
 
+  const step1Label = document.getElementById("step1Label");
+  const step2Label = document.getElementById("step2Label");
+  const step3Label = document.getElementById("step3Label");
+  const step4Label = document.getElementById("step4Label");
+
+  if (mode === "livecontainer") {
+    step3Label.textContent = "3. Bypass Apple signing (LiveContainer guest mode)";
+    step4Label.textContent = "4. Push IPA directly into LiveContainer over HouseArrest";
+  } else {
+    step3Label.textContent = "3. Sign with selected Apple Account Certificate & profile";
+    step4Label.textContent = "4. Deploy to device via wireless RSD tunnel / USB";
+  }
+
   step1Status.className = "step-status active";
   step1Status.textContent = "⏳";
 
   try {
     const uploadRes = await apiFetch(`/api/v1/artifacts?filename=${encodeURIComponent(selectedFile.name)}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream"
-      },
+      headers: { "Content-Type": "application/octet-stream" },
       body: selectedFile
     });
     if (!uploadRes.ok) throw new Error(`Upload failed: ${await uploadRes.text()}`);
@@ -722,36 +872,58 @@ sideloadBtn.onclick = async () => {
 
     step2Status.className = "step-status active";
     step2Status.textContent = "⏳";
-    const deployRes = await apiFetch("/api/v1/admin/deploy", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        artifact_id: artifactData.id,
-        device_id: deviceId,
-        apple_id: chosenAccount,
-        auto_approve: true
-      })
-    });
-    if (!deployRes.ok) throw new Error(`Deploy failed: ${await deployRes.text()}`);
-    const deployData = await deployRes.json();
+
+    let deployRes, deployData;
+    if (mode === "livecontainer") {
+      deployRes = await apiFetch("/api/v1/admin/livecontainer/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          artifact_id: artifactData.id,
+          device_id: deviceId
+        })
+      });
+    } else {
+      deployRes = await apiFetch("/api/v1/admin/deploy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          artifact_id: artifactData.id,
+          device_id: deviceId,
+          apple_id: chosenAccount,
+          auto_approve: true
+        })
+      });
+    }
+
+    if (!deployRes.ok) throw new Error(`Deployment failed: ${await deployRes.text()}`);
+    deployData = await deployRes.json();
     step2Status.className = "step-status done";
     step2Status.textContent = "✓";
 
     step3Status.className = "step-status active";
     step3Status.textContent = "⏳";
-    const signJobId = deployData.sign_job_id;
 
-    const pollSignJob = setInterval(async () => {
+    const jobId = deployData.sign_job_id || deployData.job_id;
+    if (!jobId) {
+      step3Status.className = "step-status done";
+      step3Status.textContent = "✓";
+      step4Status.className = "step-status done";
+      step4Status.textContent = "✓";
+      sideloadBtn.disabled = false;
+      fetchDashboard();
+      return;
+    }
+
+    const pollJob = setInterval(async () => {
       try {
         const jobsRes = await apiFetch("/api/v1/dashboard/jobs");
         if (jobsRes.ok) {
           const jobsData = await jobsRes.json();
-          const job = jobsData.rows.find(j => j.id === signJobId);
+          const job = jobsData.rows.find(j => j.id === jobId);
           if (job) {
             if (job.state === "completed") {
-              clearInterval(pollSignJob);
+              clearInterval(pollJob);
               step3Status.className = "step-status done";
               step3Status.textContent = "✓";
               step4Status.className = "step-status done";
@@ -759,10 +931,10 @@ sideloadBtn.onclick = async () => {
               sideloadBtn.disabled = false;
               fetchDashboard();
             } else if (job.state === "failed" || job.state === "dead") {
-              clearInterval(pollSignJob);
+              clearInterval(pollJob);
               step3Status.className = "step-status";
               step3Status.textContent = "✗";
-              alert(`Signing failed: ${job.error_details || job.error_category || "error"}`);
+              alert(`Installation failed: ${job.error_details || job.error_category || "error"}`);
               sideloadBtn.disabled = false;
             }
           }
@@ -773,6 +945,45 @@ sideloadBtn.onclick = async () => {
   } catch (err) {
     alert("Sideload error: " + err.message);
     sideloadBtn.disabled = false;
+  }
+};
+
+// -------------------------------------------------------------
+// LiveContainer Modal & 1-Click Installation
+// -------------------------------------------------------------
+function openLiveContainerModal() {
+  const modal = document.getElementById("liveContainerModal");
+  modal.style.display = "flex";
+
+  const devSel = document.getElementById("lcDeviceSelect");
+  devSel.innerHTML = liveDevices.map(d => `<option value="${d.id}">${d.device_name || 'Device'} (${d.model || d.platform})</option>`).join("");
+
+  const accSel = document.getElementById("lcAccountSelect");
+  accSel.innerHTML = '<option value="auto">Auto (Best Available Account)</option>' +
+    liveAccounts.map(a => `<option value="${a.label}">${a.label} (${a.registered_app_id_count || 0}/3 slots used)</option>`).join("");
+}
+
+function closeLiveContainerModal() {
+  document.getElementById("liveContainerModal").style.display = "none";
+}
+
+document.getElementById("installLcForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const deviceId = document.getElementById("lcDeviceSelect").value;
+  const appleId = document.getElementById("lcAccountSelect").value;
+
+  try {
+    const res = await apiFetch("/api/v1/admin/livecontainer/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: deviceId, apple_id: appleId })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    closeLiveContainerModal();
+    alert("LiveContainer installation started! Check the Job Activity table for progress.");
+    fetchDashboard();
+  } catch(err) {
+    alert("Failed to start LiveContainer install: " + err.message);
   }
 };
 
@@ -945,8 +1156,10 @@ async function fetchDashboard() {
         accRows.map(a => {
           const used = a.registered_app_id_count || 0;
           const isFull = used >= 3;
-          return `<option value="${a.label}" ${a.label === currentAccountChoice ? 'selected' : ''}>${a.label} — ${used}/3 slots used ${isFull ? '(FULL)' : `(${3-used} free)`}</option>`;
+          return `<option value="${a.label}" ${a.label === currentAccountChoice ? 'selected' : ''} ${isFull ? 'style="color:var(--text-muted);"' : ''}>${a.label} — ${used}/3 slots used ${isFull ? '(FULL)' : `(${3-used} free)`}</option>`;
         }).join("");
+
+      updateSlotIndicators();
 
       const accountsList = document.getElementById("accountsList");
       if (accRows.length === 0) {
