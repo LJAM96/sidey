@@ -232,6 +232,40 @@ type signParams struct {
 	DeviceUdid  string `json:"udid"`
 	DeviceName  string `json:"device_name"`
 	DeviceType  string `json:"device_type"`
+	AppleID     string `json:"apple_id"`
+}
+
+func getCredentials(cfg config, requestedAppleID string) (appleID, applePassword string) {
+	accountsPaths := []string{
+		filepath.Join(cfg.agentStateDir, "accounts.json"),
+		"/run/sidey/accounts.json",
+		"/var/lib/sidey/signing-worker/accounts.json",
+	}
+	for _, p := range accountsPaths {
+		if data, err := os.ReadFile(p); err == nil {
+			accounts := make(map[string]string)
+			if err := json.Unmarshal(data, &accounts); err == nil && len(accounts) > 0 {
+				if requestedAppleID != "" {
+					if pass, ok := accounts[requestedAppleID]; ok && pass != "" {
+						return requestedAppleID, pass
+					}
+				} else {
+					for id, pass := range accounts {
+						if id != "" && pass != "" {
+							return id, pass
+						}
+					}
+				}
+			}
+		}
+	}
+	if requestedAppleID != "" && requestedAppleID == cfg.appleID {
+		return cfg.appleID, cfg.applePassword
+	}
+	if requestedAppleID != "" && cfg.appleID == "" {
+		return requestedAppleID, cfg.applePassword
+	}
+	return cfg.appleID, cfg.applePassword
 }
 
 func claimAndRun(cfg config, agentKey string) {
@@ -368,9 +402,18 @@ func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json
 		return
 	}
 
-	// 3. Sign with signonly.
+	// 3. Resolve Apple Account & Sign with signonly.
+	signCfg := cfg
+	appleID, applePassword := getCredentials(cfg, params.AppleID)
+	if appleID != "" {
+		signCfg.appleID = appleID
+	}
+	if applePassword != "" {
+		signCfg.applePassword = applePassword
+	}
+
 	signedIPA := filepath.Join(workDir, "signed.ipa")
-	signResult, signErr := runSignonly(cfg, workDir, sourceIPA, signedIPA, machineName, params.DeviceUdid, params.DeviceName, params.DeviceType)
+	signResult, signErr := runSignonly(signCfg, workDir, sourceIPA, signedIPA, machineName, params.DeviceUdid, params.DeviceName, params.DeviceType)
 	if signErr != nil {
 		category := "other"
 		details := signErr.Error()
@@ -403,7 +446,7 @@ func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json
 		wg.Wait()
 		return
 	}
-	signedID, err := uploadSignedIPA(cfg, agentKey, jobID, params, *deviceID, signResult, signedIPA)
+	signedID, err := uploadSignedIPA(signCfg, agentKey, jobID, params, *deviceID, signResult, signedIPA)
 	if err != nil {
 		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other", "signed ipa upload failed: "+err.Error(), nil)
 		encryptState(cfg.stateRuntime, cfg.agentStateDir)

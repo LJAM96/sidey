@@ -212,12 +212,16 @@
 
   .form-row {
     margin-top: 14px;
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 10px;
-    align-items: center;
   }
+  @media (max-width: 600px) {
+    .form-row { grid-template-columns: 1fr; }
+  }
+
   .select-input {
-    flex: 1;
+    width: 100%;
     background: var(--bg);
     border: 1px solid var(--surface-border);
     color: var(--text-primary);
@@ -282,20 +286,30 @@
     display: block;
   }
 
-  .meta-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    margin-bottom: 14px;
-  }
-  .meta-card {
+  .account-card-item {
     background: var(--bg);
     border: 1px solid var(--surface-border);
     border-radius: var(--radius-sm);
-    padding: 10px 12px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: relative;
   }
-  .meta-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
-  .meta-value { font-size: 13px; font-weight: 600; }
+  .account-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .account-email { font-weight: 600; font-size: 13px; }
+  .account-meta-line {
+    display: flex;
+    gap: 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    align-items: center;
+    flex-wrap: wrap;
+  }
 
   .table-container {
     overflow-x: auto;
@@ -387,10 +401,22 @@
       </div>
 
       <div class="form-row">
-        <select id="targetDeviceSelect" class="select-input">
-          <option value="">Loading connected devices...</option>
-        </select>
-        <button id="sideloadBtn" class="btn btn-primary" disabled>Sign & Sideload</button>
+        <div>
+          <label class="input-label">Target Device</label>
+          <select id="targetDeviceSelect" class="select-input">
+            <option value="">Loading connected devices...</option>
+          </select>
+        </div>
+        <div>
+          <label class="input-label">Signing Apple Account</label>
+          <select id="targetAccountSelect" class="select-input">
+            <option value="auto">Auto (Choose account with open slots)</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-top: 14px; display:flex; justify-content:flex-end;">
+        <button id="sideloadBtn" class="btn btn-primary" style="width:100%; justify-content:center;" disabled>Sign & Sideload to Device</button>
       </div>
 
       <!-- Sideloading Progress Box -->
@@ -405,7 +431,7 @@
         </div>
         <div class="step-row" id="step3">
           <div class="step-status" id="step3Status">3</div>
-          <span>3. Sign with Apple Certificate & embedded profile</span>
+          <span>3. Sign with selected Apple Account Certificate & profile</span>
         </div>
         <div class="step-row" id="step4">
           <div class="step-status" id="step4Status">4</div>
@@ -414,47 +440,20 @@
       </div>
     </div>
 
-    <!-- Apple Developer Account Connection Form -->
+    <!-- Apple Developer Accounts Pool -->
     <div class="card">
       <div class="card-title">
-        <span>Apple Developer Account</span>
-        <span id="accStateBadge" class="badge badge-neutral">Checking...</span>
+        <span>Apple Developer Accounts</span>
+        <button class="btn btn-sm btn-primary" onclick="openAddAccountModal()">+ Add Account</button>
       </div>
 
-      <div class="meta-grid">
-        <div class="meta-card">
-          <div class="meta-title">Active Account</div>
-          <div class="meta-value" id="accEmail">Loading...</div>
-        </div>
-        <div class="meta-card">
-          <div class="meta-title">Team Identifier</div>
-          <div class="meta-value mono" id="accTeam">Loading...</div>
-        </div>
-        <div class="meta-card">
-          <div class="meta-title">Registered Devices</div>
-          <div class="meta-value" id="accDevices">0 / 100</div>
-        </div>
-        <div class="meta-card">
-          <div class="meta-title">Certificates</div>
-          <div class="meta-value" id="accCerts">0 Active</div>
-        </div>
+      <div id="accountsList" style="display:flex; flex-direction:column; gap:10px;">
+        <div class="text-muted" style="font-size:13px;">Loading accounts...</div>
       </div>
 
-      <form id="appleAccountForm" class="account-form">
-        <div>
-          <label class="input-label">Apple ID (Email)</label>
-          <input type="email" id="appleIdInput" class="input-field" placeholder="apple@lukemulvaney.com" required>
-        </div>
-        <div>
-          <label class="input-label">Apple Password</label>
-          <input type="password" id="applePasswordInput" class="input-field" placeholder="Account Password" required>
-        </div>
-        <div>
-          <label class="input-label">2FA Code (If prompted on your Apple Device)</label>
-          <input type="text" id="apple2FaInput" class="input-field" placeholder="6-digit verification code">
-        </div>
-        <button type="submit" class="btn btn-primary" style="margin-top:4px;">Save & Authenticate Account</button>
-      </form>
+      <div class="guide-box" style="margin-top:14px;">
+        <strong>Bypass 3-App Limit:</strong> Connect multiple free Apple Developer IDs above. Sidey distributes your apps across accounts so you can run 6, 9, or more signed apps simultaneously on the same device!
+      </div>
     </div>
   </div>
 
@@ -489,7 +488,7 @@
     <div class="guide-box">
       <strong>How to connect a new device:</strong>
       <ul style="margin-left: 18px; margin-top: 6px;">
-        <li><strong>Apple TV (tvOS)</strong>: Click <strong>+ Add Device</strong> above and enter your Apple TV details. The device will be ready for tvOS sideloading over the Tailnet.</li>
+        <li><strong>Apple TV (tvOS)</strong>: Click <strong>+ Add Device</strong> above. The device will be ready for tvOS sideloading over the Tailnet.</li>
         <li><strong>iPhone / iPad (Wireless RSD)</strong>: Ensure device is on the Tailnet (or Wi-Fi), and pair once over USB with: <code>pymobiledevice3 lockdown remotepairing --pair</code>. The <code>sidey-wireless-tunnel</code> service connects automatically.</li>
       </ul>
     </div>
@@ -609,9 +608,38 @@
   </div>
 </div>
 
+<!-- Add Apple Account Modal -->
+<div id="addAccountModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(4px);">
+  <div style="background:var(--surface); border:1px solid var(--surface-border); border-radius:var(--radius-lg); width:100%; max-width:460px; padding:24px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+      <div style="font-size:16px; font-weight:600;">Connect Apple Developer Account</div>
+      <button style="background:none; border:none; color:var(--text-muted); font-size:22px; cursor:pointer;" onclick="closeAddAccountModal()">&times;</button>
+    </div>
+    <form id="addAccountForm" class="account-form">
+      <div>
+        <label class="input-label">Apple ID (Email)</label>
+        <input type="email" id="appleIdInput" class="input-field" placeholder="apple@example.com" required>
+      </div>
+      <div>
+        <label class="input-label">Apple Password</label>
+        <input type="password" id="applePasswordInput" class="input-field" placeholder="Account Password" required>
+      </div>
+      <div>
+        <label class="input-label">2FA Code (If prompted on Apple Device / SMS)</label>
+        <input type="text" id="apple2FaInput" class="input-field" placeholder="6-digit verification code">
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:10px;">
+        <button type="button" class="btn" onclick="closeAddAccountModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Connect Account</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script>
 let selectedFile = null;
 let liveDevices = [];
+let liveAccounts = [];
 let cachedApiKey = "";
 
 function updateBadge(badgeEl, state) {
@@ -668,6 +696,7 @@ const ipaFileInput = document.getElementById("ipaFileInput");
 const fileLabel = document.getElementById("fileLabel");
 const sideloadBtn = document.getElementById("sideloadBtn");
 const targetDeviceSelect = document.getElementById("targetDeviceSelect");
+const targetAccountSelect = document.getElementById("targetAccountSelect");
 
 dropZone.onclick = () => ipaFileInput.click();
 dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add("dragover"); };
@@ -710,6 +739,7 @@ sideloadBtn.onclick = async () => {
   if (!selectedFile || !targetDeviceSelect.value) return;
 
   const deviceId = targetDeviceSelect.value;
+  const chosenAccount = targetAccountSelect.value;
   const progressBox = document.getElementById("progressTracker");
   progressBox.style.display = "flex";
   sideloadBtn.disabled = true;
@@ -747,6 +777,7 @@ sideloadBtn.onclick = async () => {
       body: JSON.stringify({
         artifact_id: artifactData.id,
         device_id: deviceId,
+        apple_id: chosenAccount,
         auto_approve: true
       })
     });
@@ -793,9 +824,16 @@ sideloadBtn.onclick = async () => {
 };
 
 // -------------------------------------------------------------
-// Apple Account Submission Form
+// Apple Accounts Modal & Management
 // -------------------------------------------------------------
-document.getElementById("appleAccountForm").onsubmit = async (e) => {
+function openAddAccountModal() {
+  document.getElementById("addAccountModal").style.display = "flex";
+}
+function closeAddAccountModal() {
+  document.getElementById("addAccountModal").style.display = "none";
+}
+
+document.getElementById("addAccountForm").onsubmit = async (e) => {
   e.preventDefault();
   const apiKey = await ensureApiKey();
   if (!apiKey) { alert("Admin API Key missing"); return; }
@@ -813,12 +851,29 @@ document.getElementById("appleAccountForm").onsubmit = async (e) => {
       body: JSON.stringify({ apple_id: appleId, apple_password: applePassword, two_factor_code: twoFactorCode })
     });
     if (!res.ok) throw new Error(await res.text());
-    alert("Apple credentials saved. Signing worker will authenticate on signing requests.");
+    closeAddAccountModal();
+    document.getElementById("appleIdInput").value = "";
+    document.getElementById("applePasswordInput").value = "";
+    document.getElementById("apple2FaInput").value = "";
+    alert(`Account ${appleId} added successfully!`);
     fetchDashboard();
   } catch (err) {
-    alert("Failed to save credentials: " + err.message);
+    alert("Failed to save account credentials: " + err.message);
   }
 };
+
+async function deleteAccount(accId, accEmail) {
+  if (!confirm(`Are you sure you want to remove Apple Account "${accEmail}"?`)) return;
+  const apiKey = await ensureApiKey();
+  if (!apiKey) return;
+  try {
+    const res = await fetch(`/api/v1/admin/apple-accounts/${accId}`, {
+      method: "DELETE",
+      headers: { "Authorization": `Bearer ${apiKey}` }
+    });
+    if (res.ok) fetchDashboard();
+  } catch(e) {}
+}
 
 // -------------------------------------------------------------
 // Add Device Modal & Handlers
@@ -826,7 +881,6 @@ document.getElementById("appleAccountForm").onsubmit = async (e) => {
 function openAddDeviceModal() {
   const modal = document.getElementById("addDeviceModal");
   modal.style.display = "flex";
-  // Pre-fill with Apple TV defaults if not already registered
   if (!liveDevices.some(d => d.platform === "tvos")) {
     document.getElementById("newDevName").value = "Living Room Apple TV";
     document.getElementById("newDevPlatform").value = "tvos";
@@ -945,21 +999,40 @@ async function fetchDashboard() {
       `).join("");
     }
 
-    // 2. Apple Accounts
+    // 2. Apple Accounts Pool
     const accRes = await fetch("/api/v1/dashboard/accounts", { headers: { "Authorization": `Bearer ${apiKey}` } });
     if (accRes.ok) {
       const accData = await accRes.json();
       const accRows = accData.rows || [];
-      if (accRows.length > 0) {
-        const acc = accRows[0];
-        document.getElementById("accEmail").textContent = acc.label || "—";
-        document.getElementById("accTeam").textContent = acc.team_identifier || "—";
-        updateBadge(document.getElementById("accStateBadge"), acc.auth_state || "authenticated");
-        document.getElementById("accDevices").textContent = `${acc.registered_device_count || 0} / 100`;
-        document.getElementById("accCerts").textContent = `${acc.cert_count || 0} Active`;
-        if (!document.getElementById("appleIdInput").value) {
-          document.getElementById("appleIdInput").value = acc.label || "";
-        }
+      liveAccounts = accRows;
+
+      // Update Sideload Panel Account Select
+      const currentAccountChoice = targetAccountSelect.value || "auto";
+      targetAccountSelect.innerHTML = '<option value="auto">Auto (Choose account with open slots)</option>' +
+        accRows.map(a => `<option value="${a.label}" ${a.label === currentAccountChoice ? 'selected' : ''}>${a.label} (${a.registered_app_id_count || 0}/3 slots used)</option>`).join("");
+
+      // Render Accounts Cards
+      const accountsList = document.getElementById("accountsList");
+      if (accRows.length === 0) {
+        accountsList.innerHTML = `<div class="text-muted" style="font-size:13px;">No Apple Accounts connected yet. Click "+ Add Account" to connect one.</div>`;
+      } else {
+        accountsList.innerHTML = accRows.map(a => `
+          <div class="account-card-item">
+            <div class="account-card-top">
+              <span class="account-email">${a.label || '—'}</span>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <span class="badge ${a.auth_state === 'authenticated' ? 'badge-success' : 'badge-warning'}">${a.auth_state || 'unknown'}</span>
+                <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}', '${a.label}')">&times;</button>
+              </div>
+            </div>
+            <div class="account-meta-line">
+              <span>Team: <strong class="mono">${a.team_identifier || 'Pending'}</strong></span>
+              <span>App Slots: <strong>${a.registered_app_id_count || 0} / 3 used</strong></span>
+              <span>Devices: <strong>${a.registered_device_count || 0} / 100</strong></span>
+              <span>Certificates: <strong>${a.cert_count || 0}</strong></span>
+            </div>
+          </div>
+        `).join("");
       }
     }
 

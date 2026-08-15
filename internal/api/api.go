@@ -71,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/enrolment-tokens", s.admin(s.handleCreateEnrolmentToken))
 
 	mux.Handle("POST /api/v1/admin/apple-accounts/credentials", s.admin(s.handleUpdateAppleCredentials))
+	mux.Handle("DELETE /api/v1/admin/apple-accounts/{id}", s.admin(s.handleDeleteAppleAccount))
 	mux.Handle("POST /api/v1/admin/deploy", s.admin(s.handleAdminDeploy))
 	mux.Handle("POST /api/v1/admin/devices", s.admin(s.handleAdminCreateDevice))
 	mux.Handle("DELETE /api/v1/admin/devices/{id}", s.admin(s.handleAdminDeleteDevice))
