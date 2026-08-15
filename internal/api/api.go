@@ -65,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /api/v1/config", s.handleConfig)
 	mux.Handle("GET /", http.FileServerFS(webassets.Sub))
 
 	mux.Handle("POST /api/v1/admin/enrolment-tokens", s.admin(s.handleCreateEnrolmentToken))
@@ -235,3 +236,11 @@ func decodeJSON(r *http.Request, dst any) error {
 	}
 	return nil
 }
+
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"admin_key":  s.adminKey,
+		"configured": s.adminKey != "",
+	})
+}
+

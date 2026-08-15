@@ -66,15 +66,15 @@
     gap: 10px;
   }
   .brand-logo {
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     background: linear-gradient(135deg, #3b82f6, #1d4ed8);
     border-radius: 7px;
     display: flex;
     align-items: center;
     justify-content: center;
     font-weight: 700;
-    font-size: 15px;
+    font-size: 16px;
     color: #fff;
   }
   .brand-title {
@@ -85,7 +85,6 @@
   .brand-sub {
     font-size: 12px;
     color: var(--text-muted);
-    font-weight: 400;
   }
 
   .auth-bar {
@@ -97,12 +96,11 @@
     background: var(--bg);
     border: 1px solid var(--surface-border);
     color: var(--text-primary);
-    padding: 8px 12px;
+    padding: 7px 12px;
     border-radius: var(--radius-sm);
-    font-size: 13px;
-    width: 240px;
+    font-size: 12px;
+    width: 220px;
     outline: none;
-    transition: border-color 0.15s ease;
   }
   .auth-input:focus { border-color: var(--accent); }
 
@@ -150,17 +148,16 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 28px;
+    gap: 24px;
   }
 
-  /* Sideload Hub Hero */
-  .hub-grid {
+  .grid-2 {
     display: grid;
-    grid-template-columns: 1.4fr 1fr;
+    grid-template-columns: 1.2fr 1fr;
     gap: 20px;
   }
-  @media (max-width: 900px) {
-    .hub-grid { grid-template-columns: 1fr; }
+  @media (max-width: 960px) {
+    .grid-2 { grid-template-columns: 1fr; }
   }
 
   .card {
@@ -238,10 +235,10 @@
     margin-top: 16px;
     background: var(--surface-elevated);
     border-radius: var(--radius-sm);
-    padding: 12px 16px;
+    padding: 14px 16px;
     display: none;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
   }
   .step-row {
     display: flex;
@@ -251,13 +248,13 @@
     color: var(--text-secondary);
   }
   .step-status {
-    width: 18px;
-    height: 18px;
+    width: 20px;
+    height: 20px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 10px;
+    font-size: 11px;
     background: var(--surface-border);
     color: var(--text-muted);
   }
@@ -265,21 +262,44 @@
   .step-status.done { background: var(--success); color: #000; font-weight: bold; }
   @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
 
-  /* Apple Account Card */
-  .account-meta {
+  /* Apple Account Box */
+  .account-form {
     display: flex;
     flex-direction: column;
     gap: 12px;
   }
-  .meta-item {
-    display: flex;
-    justify-content: space-between;
+  .input-field {
+    background: var(--bg);
+    border: 1px solid var(--surface-border);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
     font-size: 13px;
-    border-bottom: 1px solid var(--surface-border);
-    padding-bottom: 8px;
+    outline: none;
+    width: 100%;
   }
-  .meta-label { color: var(--text-muted); }
-  .meta-val { font-weight: 500; }
+  .input-field:focus { border-color: var(--accent); }
+  .input-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    display: block;
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .meta-card {
+    background: var(--bg);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+  }
+  .meta-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
+  .meta-value { font-size: 13px; font-weight: 600; }
 
   /* Tables */
   .table-container {
@@ -322,62 +342,17 @@
   .badge-error { background: var(--error-bg); color: var(--error); }
   .badge-neutral { background: var(--surface-elevated); color: var(--text-secondary); }
 
-  /* Modals */
-  .modal-overlay {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0, 0, 0, 0.7);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    backdrop-filter: blur(4px);
-  }
-  .modal {
-    background: var(--surface);
-    border: 1px solid var(--surface-border);
-    border-radius: var(--radius-lg);
-    width: 100%;
-    max-width: 440px;
-    padding: 24px;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
-  }
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 18px;
-  }
-  .modal-title { font-size: 16px; font-weight: 600; }
-  .close-btn {
-    background: none; border: none; color: var(--text-muted);
-    font-size: 20px; cursor: pointer;
-  }
-  .modal-form {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-  .input-group {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .input-group label {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-secondary);
-  }
-  .input-group input {
+  .guide-box {
     background: var(--bg);
     border: 1px solid var(--surface-border);
-    color: var(--text-primary);
-    padding: 9px 12px;
     border-radius: var(--radius-sm);
-    font-size: 13px;
-    outline: none;
+    padding: 12px 16px;
+    margin-top: 14px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
   }
-  .input-group input:focus { border-color: var(--accent); }
+  .guide-box strong { color: var(--text-primary); }
 </style>
 </head>
 <body>
@@ -393,21 +368,21 @@
 
   <div class="auth-bar">
     <input id="apiKey" class="auth-input" type="password" placeholder="Admin API Key">
-    <button id="saveKeyBtn" class="btn btn-primary">Connect</button>
-    <div id="connBadge" class="live-badge" style="display:none;">
-      <span class="dot"></span> <span id="connText">Live</span>
+    <button id="saveKeyBtn" class="btn btn-primary btn-sm">Save Key</button>
+    <div id="connBadge" class="live-badge">
+      <span class="dot"></span> <span id="connText">Connecting...</span>
     </div>
   </div>
 </header>
 
 <main>
   <!-- Sideload Hub & Apple Account -->
-  <div class="hub-grid">
+  <div class="grid-2">
     <!-- Quick Sideload Panel -->
     <div class="card">
       <div class="card-title">
         <span>Sideload Application</span>
-        <span id="uploadBadge" class="badge badge-neutral">Ready</span>
+        <span id="sideloadStatusBadge" class="badge badge-neutral">Ready</span>
       </div>
 
       <input type="file" id="ipaFileInput" accept=".ipa" style="display: none;">
@@ -419,7 +394,7 @@
 
       <div class="form-row">
         <select id="targetDeviceSelect" class="select-input">
-          <option value="">Select Target Device...</option>
+          <option value="">Loading connected devices...</option>
         </select>
         <button id="sideloadBtn" class="btn btn-primary" disabled>Sign & Sideload</button>
       </div>
@@ -428,52 +403,64 @@
       <div id="progressTracker" class="progress-tracker">
         <div class="step-row" id="step1">
           <div class="step-status" id="step1Status">1</div>
-          <span>Upload source IPA archive to Control Plane</span>
+          <span>1. Upload source IPA archive to Control Plane</span>
         </div>
         <div class="step-row" id="step2">
           <div class="step-status" id="step2Status">2</div>
-          <span>Approve artifact & check quarantine state</span>
+          <span>2. Approve artifact & check quarantine state</span>
         </div>
         <div class="step-row" id="step3">
           <div class="step-status" id="step3Status">3</div>
-          <span>Sign with Apple Certificate & embedded profile</span>
+          <span>3. Sign with Apple Certificate & embedded profile</span>
         </div>
         <div class="step-row" id="step4">
           <div class="step-status" id="step4Status">4</div>
-          <span>Deploy to device via wireless RSD tunnel / USB</span>
+          <span>4. Deploy to device via wireless RSD tunnel / USB</span>
         </div>
       </div>
     </div>
 
-    <!-- Apple Developer Account Card -->
+    <!-- Apple Developer Account Connection Form -->
     <div class="card">
       <div class="card-title">
         <span>Apple Developer Account</span>
-        <button id="openAccountModalBtn" class="btn btn-sm">Update Account</button>
+        <span id="accStateBadge" class="badge badge-neutral">Checking...</span>
       </div>
 
-      <div class="account-meta" id="accountSummary">
-        <div class="meta-item">
-          <span class="meta-label">Account Label</span>
-          <span class="meta-val" id="accEmail">Loading...</span>
+      <div class="meta-grid">
+        <div class="meta-card">
+          <div class="meta-title">Active Account</div>
+          <div class="meta-value" id="accEmail">Loading...</div>
         </div>
-        <div class="meta-item">
-          <span class="meta-label">Team Identifier</span>
-          <span class="meta-val mono" id="accTeam">Loading...</span>
+        <div class="meta-card">
+          <div class="meta-title">Team Identifier</div>
+          <div class="meta-value mono" id="accTeam">Loading...</div>
         </div>
-        <div class="meta-item">
-          <span class="meta-label">Auth State</span>
-          <span id="accStateBadge" class="badge badge-neutral">Unknown</span>
+        <div class="meta-card">
+          <div class="meta-title">Registered Devices</div>
+          <div class="meta-value" id="accDevices">0 / 100</div>
         </div>
-        <div class="meta-item">
-          <span class="meta-label">Registered Devices</span>
-          <span class="meta-val" id="accDevices">0 / 100</span>
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">Active Certificates</span>
-          <span class="meta-val" id="accCerts">0</span>
+        <div class="meta-card">
+          <div class="meta-title">Certificates</div>
+          <div class="meta-value" id="accCerts">0 Active</div>
         </div>
       </div>
+
+      <form id="appleAccountForm" class="account-form">
+        <div>
+          <label class="input-label">Apple ID (Email)</label>
+          <input type="email" id="appleIdInput" class="input-field" placeholder="apple@lukemulvaney.com" required>
+        </div>
+        <div>
+          <label class="input-label">Apple Password</label>
+          <input type="password" id="applePasswordInput" class="input-field" placeholder="Account Password" required>
+        </div>
+        <div>
+          <label class="input-label">2FA Code (If prompted on your Apple Device)</label>
+          <input type="text" id="apple2FaInput" class="input-field" placeholder="6-digit verification code">
+        </div>
+        <button type="submit" class="btn btn-primary" style="margin-top:4px;">Save & Authenticate Account</button>
+      </form>
     </div>
   </div>
 
@@ -497,9 +484,17 @@
           </tr>
         </thead>
         <tbody id="devicesList">
-          <tr><td colspan="7" class="text-muted" style="text-align:center;">No devices detected yet</td></tr>
+          <tr><td colspan="7" class="text-muted" style="text-align:center;">Loading devices...</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="guide-box">
+      <strong>How to connect a new device:</strong>
+      <ul style="margin-left: 18px; margin-top: 6px;">
+        <li><strong>iPhone / iPad (Wireless RSD)</strong>: Ensure device is on the Tailnet (or Wi-Fi), and pair once over USB with: <code>pymobiledevice3 lockdown remotepairing --pair</code>. The <code>sidey-wireless-tunnel</code> service connects automatically.</li>
+        <li><strong>Apple TV (tvOS)</strong>: Ensure Apple TV is powered on and connected to the Tailnet. Sidey discovers it over the network.</li>
+      </ul>
     </div>
   </section>
 
@@ -518,11 +513,11 @@
             <th>State</th>
             <th>Attempt</th>
             <th>Created</th>
-            <th>Error Details</th>
+            <th>Details / Errors</th>
           </tr>
         </thead>
         <tbody id="jobsList">
-          <tr><td colspan="6" class="text-muted" style="text-align:center;">No jobs yet</td></tr>
+          <tr><td colspan="6" class="text-muted" style="text-align:center;">Loading jobs...</td></tr>
         </tbody>
       </table>
     </div>
@@ -531,7 +526,7 @@
   <!-- Deployments & Auto-Refresh Calendar -->
   <section class="card">
     <div class="card-title">
-      <span>Deployments & Auto-Refresh Calendar</span>
+      <span>Deployments & 7-Day Auto-Refresh Calendar</span>
     </div>
     <div class="table-container">
       <table>
@@ -542,11 +537,11 @@
             <th>Next Refresh Due</th>
             <th>Last Result</th>
             <th>Last Refresh</th>
-            <th>Action</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody id="refreshList">
-          <tr><td colspan="6" class="text-muted" style="text-align:center;">No active deployments</td></tr>
+          <tr><td colspan="6" class="text-muted" style="text-align:center;">Loading deployments...</td></tr>
         </tbody>
       </table>
     </div>
@@ -571,51 +566,23 @@
           </tr>
         </thead>
         <tbody id="artifactsList">
-          <tr><td colspan="7" class="text-muted" style="text-align:center;">No artifacts uploaded</td></tr>
+          <tr><td colspan="7" class="text-muted" style="text-align:center;">Loading artifacts...</td></tr>
         </tbody>
       </table>
     </div>
   </section>
 </main>
 
-<!-- Modal for Apple Account Login -->
-<div class="modal-overlay" id="accountModal">
-  <div class="modal">
-    <div class="modal-header">
-      <div class="modal-title">Sign Into Apple Developer Account</div>
-      <button class="close-btn" id="closeAccountModalBtn">&times;</button>
-    </div>
-    <form class="modal-form" id="appleAccountForm">
-      <div class="input-group">
-        <label for="appleIdInput">Apple ID (Email)</label>
-        <input type="email" id="appleIdInput" placeholder="apple@example.com" required>
-      </div>
-      <div class="input-group">
-        <label for="applePasswordInput">Apple Password</label>
-        <input type="password" id="applePasswordInput" placeholder="Account Password" required>
-      </div>
-      <div class="input-group">
-        <label for="apple2FaInput">2FA Verification Code (Optional / SMS / Device)</label>
-        <input type="text" id="apple2FaInput" placeholder="6-digit code if prompted">
-      </div>
-      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:10px;">
-        <button type="button" class="btn" id="cancelAccountBtn">Cancel</button>
-        <button type="submit" class="btn btn-primary" id="saveAccountBtn">Save & Authenticate</button>
-      </div>
-    </form>
-  </div>
-</div>
-
 <script>
 let selectedFile = null;
 let liveDevices = [];
-let pollingTimer = null;
 
 function getApiKey() {
   return document.getElementById("apiKey").value.trim() || localStorage.getItem("sidey_admin_key") || "";
 }
 
 function updateBadge(badgeEl, state) {
+  if (!badgeEl) return;
   badgeEl.className = "badge " + (
     state === "completed" || state === "ok" || state === "online" || state === "paired" || state === "approved" || state === "authenticated" ? "badge-success" :
     state === "pending" || state === "in_progress" || state === "claimed" || state === "authenticating" ? "badge-warning" : "badge-error"
@@ -634,7 +601,30 @@ function fmtDate(d) {
 }
 
 // -------------------------------------------------------------
-// Sideload Drag & Drop and File Picker Handling
+// Auto-Fetch Config & Key
+// -------------------------------------------------------------
+async function initAuth() {
+  let key = localStorage.getItem("sidey_admin_key");
+  if (!key) {
+    try {
+      const res = await fetch("/api/v1/config");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.admin_key) {
+          key = data.admin_key;
+          localStorage.setItem("sidey_admin_key", key);
+        }
+      }
+    } catch(e) {}
+  }
+  if (key) {
+    document.getElementById("apiKey").value = key;
+  }
+  fetchDashboard();
+}
+
+// -------------------------------------------------------------
+// Sideload Drag & Drop Handling
 // -------------------------------------------------------------
 const dropZone = document.getElementById("dropZone");
 const ipaFileInput = document.getElementById("ipaFileInput");
@@ -660,7 +650,7 @@ ipaFileInput.onchange = (e) => {
 
 function handleFileSelected(file) {
   if (!file.name.endsWith(".ipa")) {
-    alert("Please select a valid .ipa file archive");
+    alert("Please select a valid .ipa archive file");
     return;
   }
   selectedFile = file;
@@ -679,7 +669,7 @@ function checkSideloadReady() {
 // -------------------------------------------------------------
 sideloadBtn.onclick = async () => {
   const apiKey = getApiKey();
-  if (!apiKey) { alert("Please enter and save your Admin API Key first"); return; }
+  if (!apiKey) { alert("Admin API Key is required"); return; }
   if (!selectedFile || !targetDeviceSelect.value) return;
 
   const deviceId = targetDeviceSelect.value;
@@ -755,7 +745,7 @@ sideloadBtn.onclick = async () => {
             clearInterval(pollSignJob);
             step3Status.className = "step-status";
             step3Status.textContent = "✗";
-            alert(`Signing job failed: ${job.error_details || job.error_category || "error"}`);
+            alert(`Signing failed: ${job.error_details || job.error_category || "error"}`);
             sideloadBtn.disabled = false;
           }
         }
@@ -769,17 +759,12 @@ sideloadBtn.onclick = async () => {
 };
 
 // -------------------------------------------------------------
-// Apple Account Dialog
+// Apple Account Submission Form
 // -------------------------------------------------------------
-const accountModal = document.getElementById("accountModal");
-document.getElementById("openAccountModalBtn").onclick = () => accountModal.style.display = "flex";
-document.getElementById("closeAccountModalBtn").onclick = () => accountModal.style.display = "none";
-document.getElementById("cancelAccountBtn").onclick = () => accountModal.style.display = "none";
-
 document.getElementById("appleAccountForm").onsubmit = async (e) => {
   e.preventDefault();
   const apiKey = getApiKey();
-  if (!apiKey) { alert("Please connect with your Admin API Key"); return; }
+  if (!apiKey) { alert("Admin API Key missing"); return; }
   const appleId = document.getElementById("appleIdInput").value.trim();
   const applePassword = document.getElementById("applePasswordInput").value.trim();
   const twoFactorCode = document.getElementById("apple2FaInput").value.trim();
@@ -794,8 +779,7 @@ document.getElementById("appleAccountForm").onsubmit = async (e) => {
       body: JSON.stringify({ apple_id: appleId, apple_password: applePassword, two_factor_code: twoFactorCode })
     });
     if (!res.ok) throw new Error(await res.text());
-    alert("Apple credentials saved. Signing worker will authenticate on next signing request.");
-    accountModal.style.display = "none";
+    alert("Apple credentials saved successfully. The signing worker will authenticate on signing requests.");
     fetchDashboard();
   } catch (err) {
     alert("Failed to save credentials: " + err.message);
@@ -816,21 +800,24 @@ async function fetchDashboard() {
     // 1. Devices
     const devRes = await fetch("/api/v1/dashboard/devices", { headers: { "Authorization": `Bearer ${apiKey}` } });
     if (!devRes.ok) {
-      connBadge.style.display = "none";
+      connBadge.className = "badge badge-error";
+      connText.textContent = "Unauthorized";
       return;
     }
-    connBadge.style.display = "inline-flex";
+    connBadge.className = "live-badge";
     connText.textContent = "Live " + new Date().toLocaleTimeString();
 
     const devData = await devRes.json();
     const devRows = devData.rows.map(r => Object.fromEntries(devData.columns.map((c, i) => [c, Object.values(r)[i]])));
     liveDevices = devRows;
-    document.getElementById("deviceCountBadge").textContent = `${devRows.length} Devices`;
+    document.getElementById("deviceCountBadge").textContent = `${devRows.length} Device${devRows.length === 1 ? '' : 's'}`;
 
     // Populate Target Device Select
-    const currentSelected = targetDeviceSelect.value;
-    targetDeviceSelect.innerHTML = '<option value="">Select Target Device...</option>' +
+    const currentSelected = targetDeviceSelect.value || (devRows.length > 0 ? devRows[0].id : "");
+    targetDeviceSelect.innerHTML = devRows.length === 0 ? '<option value="">No connected devices detected</option>' :
       devRows.map(d => `<option value="${d.id}" ${d.id === currentSelected ? 'selected' : ''}>${d.device_name || 'Device'} (${d.model || d.platform}) [${d.platform}]</option>`).join("");
+    
+    checkSideloadReady();
 
     // Populate Devices Table
     const devicesList = document.getElementById("devicesList");
@@ -846,7 +833,7 @@ async function fetchDashboard() {
           <td class="mono" style="font-size:11px;">${d.udid}</td>
           <td><span class="badge ${d.pairing_status === 'paired' ? 'badge-success' : 'badge-warning'}">${d.pairing_status}</span></td>
           <td>
-            <button class="btn btn-sm" onclick="selectDeviceForSideload('${d.id}')">Select for Sideload</button>
+            <button class="btn btn-sm" onclick="selectDeviceForSideload('${d.id}')">Select Device</button>
           </td>
         </tr>
       `).join("");
@@ -863,7 +850,10 @@ async function fetchDashboard() {
         document.getElementById("accTeam").textContent = acc.team_identifier || "—";
         updateBadge(document.getElementById("accStateBadge"), acc.auth_state || "authenticated");
         document.getElementById("accDevices").textContent = `${acc.registered_device_count || 0} / 100`;
-        document.getElementById("accCerts").textContent = acc.cert_count || "0";
+        document.getElementById("accCerts").textContent = `${acc.cert_count || 0} Active`;
+        if (!document.getElementById("appleIdInput").value) {
+          document.getElementById("appleIdInput").value = acc.label || "";
+        }
       }
     }
 
@@ -886,7 +876,7 @@ async function fetchDashboard() {
             <td><span class="badge ${j.state === 'completed' ? 'badge-success' : j.state === 'in_progress' || j.state === 'claimed' ? 'badge-warning' : 'badge-error'}">${j.state}</span></td>
             <td>${j.attempt}</td>
             <td>${fmtDate(j.created_at)}</td>
-            <td class="text-muted" style="max-width:260px; overflow:hidden; text-overflow:ellipsis;">${j.error_details || j.error_category || '—'}</td>
+            <td class="text-muted" style="max-width:280px; overflow:hidden; text-overflow:ellipsis;">${j.error_details || j.error_category || '—'}</td>
           </tr>
         `).join("");
       }
@@ -908,9 +898,7 @@ async function fetchDashboard() {
             <td>${fmtDate(r.next_refresh_due_at)}</td>
             <td><span class="badge ${r.last_refresh_result === 'completed' ? 'badge-success' : r.last_refresh_result === 'failed' ? 'badge-error' : 'badge-neutral'}">${r.last_refresh_result || '—'}</span></td>
             <td>${fmtDate(r.last_refresh_at)}</td>
-            <td>
-              <span class="badge badge-neutral">${r.refresh_job_state || 'idle'}</span>
-            </td>
+            <td><span class="badge badge-neutral">${r.refresh_job_state || 'idle'}</span></td>
           </tr>
         `).join("");
       }
@@ -970,13 +958,8 @@ document.getElementById("saveKeyBtn").onclick = () => {
   fetchDashboard();
 };
 
-const savedKey = localStorage.getItem("sidey_admin_key");
-if (savedKey) {
-  document.getElementById("apiKey").value = savedKey;
-}
-
+initAuth();
 setInterval(fetchDashboard, 4000);
-fetchDashboard();
 </script>
 </body>
 </html>
