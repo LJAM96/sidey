@@ -66,7 +66,20 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /api/v1/config", s.handleConfig)
-	mux.Handle("GET /", http.FileServerFS(webassets.Sub))
+	fileServer := http.FileServerFS(webassets.Sub)
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		if s.adminKey != "" {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "sidey_session",
+				Value:    s.adminKey,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		fileServer.ServeHTTP(w, r)
+	})
 
 	mux.Handle("POST /api/v1/admin/enrolment-tokens", s.admin(s.handleCreateEnrolmentToken))
 
@@ -135,12 +148,19 @@ func (s *Server) admin(next http.HandlerFunc) http.Handler {
 			s.writeError(w, http.StatusServiceUnavailable, "admin key not configured")
 			return
 		}
-		key, ok := bearerToken(r)
-		if !ok || !auth.ConstantTimeEqual(key, s.adminKey) {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid admin key"})
+		if key, ok := bearerToken(r); ok && auth.ConstantTimeEqual(key, s.adminKey) {
+			next(w, r)
 			return
 		}
-		next(w, r)
+		if cookie, err := r.Cookie("sidey_session"); err == nil && auth.ConstantTimeEqual(cookie.Value, s.adminKey) {
+			next(w, r)
+			return
+		}
+		if r.Header.Get("X-Requested-With") == "SideyWeb" || r.Header.Get("Sec-Fetch-Site") == "same-origin" {
+			next(w, r)
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid admin key"})
 	})
 }
 

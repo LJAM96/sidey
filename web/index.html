@@ -86,23 +86,6 @@
     color: var(--text-muted);
   }
 
-  .auth-bar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .auth-input {
-    background: var(--bg);
-    border: 1px solid var(--surface-border);
-    color: var(--text-primary);
-    padding: 7px 12px;
-    border-radius: var(--radius-sm);
-    font-size: 12px;
-    width: 220px;
-    outline: none;
-  }
-  .auth-input:focus { border-color: var(--accent); }
-
   .btn {
     background: var(--surface-elevated);
     color: var(--text-primary);
@@ -374,17 +357,13 @@
     </div>
   </div>
 
-  <div class="auth-bar">
-    <input id="apiKey" class="auth-input" type="password" placeholder="Admin API Key">
-    <button id="saveKeyBtn" class="btn btn-primary btn-sm">Save Key</button>
-    <div id="connBadge" class="live-badge">
-      <span class="dot"></span> <span id="connText">Connecting...</span>
-    </div>
+  <div id="connBadge" class="live-badge">
+    <span class="dot"></span> <span id="connText">Connected</span>
   </div>
 </header>
 
 <main>
-  <!-- Sideload Hub & Apple Account -->
+  <!-- Sideload Hub & Apple Accounts -->
   <div class="grid-2">
     <!-- Quick Sideload Panel -->
     <div class="card">
@@ -618,15 +597,15 @@
     <form id="addAccountForm" class="account-form">
       <div>
         <label class="input-label">Apple ID (Email)</label>
-        <input type="email" id="appleIdInput" class="input-field" placeholder="apple@example.com" required>
+        <input type="email" id="appleIdInput" class="input-field" placeholder="apple@example.com" required autocomplete="off">
       </div>
       <div>
         <label class="input-label">Apple Password</label>
-        <input type="password" id="applePasswordInput" class="input-field" placeholder="Account Password" required>
+        <input type="password" id="applePasswordInput" class="input-field" placeholder="Account Password" required autocomplete="new-password">
       </div>
       <div>
         <label class="input-label">2FA Code (If prompted on Apple Device / SMS)</label>
-        <input type="text" id="apple2FaInput" class="input-field" placeholder="6-digit verification code">
+        <input type="text" id="apple2FaInput" class="input-field" placeholder="6-digit verification code" autocomplete="off">
       </div>
       <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:10px;">
         <button type="button" class="btn" onclick="closeAddAccountModal()">Cancel</button>
@@ -640,7 +619,12 @@
 let selectedFile = null;
 let liveDevices = [];
 let liveAccounts = [];
-let cachedApiKey = "";
+
+async function apiFetch(url, options = {}) {
+  options.headers = options.headers || {};
+  options.headers["X-Requested-With"] = "SideyWeb";
+  return fetch(url, options);
+}
 
 function updateBadge(badgeEl, state) {
   if (!badgeEl) return;
@@ -659,33 +643,6 @@ function fmtDate(d) {
   } catch(e) {
     return String(d);
   }
-}
-
-async function ensureApiKey() {
-  if (cachedApiKey) return cachedApiKey;
-  let stored = localStorage.getItem("sidey_admin_key");
-  if (stored && stored.trim()) {
-    cachedApiKey = stored.trim();
-    const el = document.getElementById("apiKey");
-    if (el) el.value = cachedApiKey;
-    return cachedApiKey;
-  }
-  try {
-    const res = await fetch("/api/v1/config?t=" + Date.now(), { cache: "no-store" });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.admin_key) {
-        cachedApiKey = data.admin_key.trim();
-        localStorage.setItem("sidey_admin_key", cachedApiKey);
-        const el = document.getElementById("apiKey");
-        if (el) el.value = cachedApiKey;
-        return cachedApiKey;
-      }
-    }
-  } catch(e) {
-    console.error("Config fetch failed:", e);
-  }
-  return "";
 }
 
 // -------------------------------------------------------------
@@ -734,8 +691,6 @@ function checkSideloadReady() {
 // Execute Sideload Workflow
 // -------------------------------------------------------------
 sideloadBtn.onclick = async () => {
-  const apiKey = await ensureApiKey();
-  if (!apiKey) { alert("Admin API Key is required"); return; }
   if (!selectedFile || !targetDeviceSelect.value) return;
 
   const deviceId = targetDeviceSelect.value;
@@ -753,10 +708,9 @@ sideloadBtn.onclick = async () => {
   step1Status.textContent = "⏳";
 
   try {
-    const uploadRes = await fetch(`/api/v1/artifacts?filename=${encodeURIComponent(selectedFile.name)}`, {
+    const uploadRes = await apiFetch(`/api/v1/artifacts?filename=${encodeURIComponent(selectedFile.name)}`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/octet-stream"
       },
       body: selectedFile
@@ -768,10 +722,9 @@ sideloadBtn.onclick = async () => {
 
     step2Status.className = "step-status active";
     step2Status.textContent = "⏳";
-    const deployRes = await fetch("/api/v1/admin/deploy", {
+    const deployRes = await apiFetch("/api/v1/admin/deploy", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -792,7 +745,7 @@ sideloadBtn.onclick = async () => {
 
     const pollSignJob = setInterval(async () => {
       try {
-        const jobsRes = await fetch("/api/v1/dashboard/jobs", { headers: { "Authorization": `Bearer ${apiKey}` } });
+        const jobsRes = await apiFetch("/api/v1/dashboard/jobs");
         if (jobsRes.ok) {
           const jobsData = await jobsRes.json();
           const job = jobsData.rows.find(j => j.id === signJobId);
@@ -835,17 +788,14 @@ function closeAddAccountModal() {
 
 document.getElementById("addAccountForm").onsubmit = async (e) => {
   e.preventDefault();
-  const apiKey = await ensureApiKey();
-  if (!apiKey) { alert("Admin API Key missing"); return; }
   const appleId = document.getElementById("appleIdInput").value.trim();
   const applePassword = document.getElementById("applePasswordInput").value.trim();
   const twoFactorCode = document.getElementById("apple2FaInput").value.trim();
 
   try {
-    const res = await fetch("/api/v1/admin/apple-accounts/credentials", {
+    const res = await apiFetch("/api/v1/admin/apple-accounts/credentials", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({ apple_id: appleId, apple_password: applePassword, two_factor_code: twoFactorCode })
@@ -864,12 +814,9 @@ document.getElementById("addAccountForm").onsubmit = async (e) => {
 
 async function deleteAccount(accId, accEmail) {
   if (!confirm(`Are you sure you want to remove Apple Account "${accEmail}"?`)) return;
-  const apiKey = await ensureApiKey();
-  if (!apiKey) return;
   try {
-    const res = await fetch(`/api/v1/admin/apple-accounts/${accId}`, {
-      method: "DELETE",
-      headers: { "Authorization": `Bearer ${apiKey}` }
+    const res = await apiFetch(`/api/v1/admin/apple-accounts/${accId}`, {
+      method: "DELETE"
     });
     if (res.ok) fetchDashboard();
   } catch(e) {}
@@ -896,8 +843,6 @@ function closeAddDeviceModal() {
 
 document.getElementById("addDeviceForm").onsubmit = async (e) => {
   e.preventDefault();
-  const apiKey = await ensureApiKey();
-  if (!apiKey) { alert("Admin API key required"); return; }
   const name = document.getElementById("newDevName").value.trim();
   const platform = document.getElementById("newDevPlatform").value;
   const model = document.getElementById("newDevModel").value.trim();
@@ -905,10 +850,9 @@ document.getElementById("addDeviceForm").onsubmit = async (e) => {
   const os = document.getElementById("newDevOs").value.trim();
 
   try {
-    const res = await fetch("/api/v1/admin/devices", {
+    const res = await apiFetch("/api/v1/admin/devices", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -930,12 +874,9 @@ document.getElementById("addDeviceForm").onsubmit = async (e) => {
 
 async function deleteDevice(devId, devName) {
   if (!confirm(`Are you sure you want to remove device "${devName}"?`)) return;
-  const apiKey = await ensureApiKey();
-  if (!apiKey) return;
   try {
-    const res = await fetch(`/api/v1/admin/devices/${devId}`, {
-      method: "DELETE",
-      headers: { "Authorization": `Bearer ${apiKey}` }
+    const res = await apiFetch(`/api/v1/admin/devices/${devId}`, {
+      method: "DELETE"
     });
     if (res.ok) fetchDashboard();
   } catch(e) {}
@@ -945,22 +886,15 @@ async function deleteDevice(devId, devName) {
 // Live Dashboard Polling
 // -------------------------------------------------------------
 async function fetchDashboard() {
-  const apiKey = await ensureApiKey();
   const connBadge = document.getElementById("connBadge");
   const connText = document.getElementById("connText");
 
-  if (!apiKey) {
-    if (connBadge) connBadge.className = "badge badge-warning";
-    if (connText) connText.textContent = "API Key Required";
-    return;
-  }
-
   try {
     // 1. Devices
-    const devRes = await fetch("/api/v1/dashboard/devices", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    const devRes = await apiFetch("/api/v1/dashboard/devices");
     if (!devRes.ok) {
       connBadge.className = "badge badge-error";
-      connText.textContent = "Unauthorized";
+      connText.textContent = "Error";
       return;
     }
     connBadge.className = "live-badge";
@@ -1000,18 +934,16 @@ async function fetchDashboard() {
     }
 
     // 2. Apple Accounts Pool
-    const accRes = await fetch("/api/v1/dashboard/accounts", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    const accRes = await apiFetch("/api/v1/dashboard/accounts");
     if (accRes.ok) {
       const accData = await accRes.json();
       const accRows = accData.rows || [];
       liveAccounts = accRows;
 
-      // Update Sideload Panel Account Select
       const currentAccountChoice = targetAccountSelect.value || "auto";
       targetAccountSelect.innerHTML = '<option value="auto">Auto (Choose account with open slots)</option>' +
         accRows.map(a => `<option value="${a.label}" ${a.label === currentAccountChoice ? 'selected' : ''}>${a.label} (${a.registered_app_id_count || 0}/3 slots used)</option>`).join("");
 
-      // Render Accounts Cards
       const accountsList = document.getElementById("accountsList");
       if (accRows.length === 0) {
         accountsList.innerHTML = `<div class="text-muted" style="font-size:13px;">No Apple Accounts connected yet. Click "+ Add Account" to connect one.</div>`;
@@ -1037,7 +969,7 @@ async function fetchDashboard() {
     }
 
     // 3. Jobs
-    const jobsRes = await fetch("/api/v1/dashboard/jobs", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    const jobsRes = await apiFetch("/api/v1/dashboard/jobs");
     if (jobsRes.ok) {
       const jobsData = await jobsRes.json();
       const jobsRows = jobsData.rows || [];
@@ -1062,7 +994,7 @@ async function fetchDashboard() {
     }
 
     // 4. Refresh Calendar
-    const refRes = await fetch("/api/v1/dashboard/refresh", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    const refRes = await apiFetch("/api/v1/dashboard/refresh");
     if (refRes.ok) {
       const refData = await refRes.json();
       const refRows = refData.rows || [];
@@ -1084,7 +1016,7 @@ async function fetchDashboard() {
     }
 
     // 5. Artifacts
-    const artRes = await fetch("/api/v1/dashboard/artifacts", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    const artRes = await apiFetch("/api/v1/dashboard/artifacts");
     if (artRes.ok) {
       const artData = await artRes.json();
       const artRows = artData.rows || [];
@@ -1120,27 +1052,15 @@ function selectDeviceForSideload(devId) {
 }
 
 async function approveArtifact(artId) {
-  const apiKey = await ensureApiKey();
-  if (!apiKey) return;
-  await fetch(`/api/v1/artifacts/${artId}`, {
+  await apiFetch(`/api/v1/artifacts/${artId}`, {
     method: "PATCH",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ state: "approved" })
   });
   fetchDashboard();
 }
-
-document.getElementById("saveKeyBtn").onclick = () => {
-  const key = document.getElementById("apiKey").value.trim();
-  if (key) {
-    cachedApiKey = key;
-    localStorage.setItem("sidey_admin_key", key);
-    fetchDashboard();
-  }
-};
 
 fetchDashboard();
 setInterval(fetchDashboard, 4000);
