@@ -528,6 +528,10 @@ func fetchGitHubApps(client *http.Client, src StoreSource) []StoreApp {
 		return versions[i].UpdatedDate > versions[j].UpdatedDate
 	})
 
+	if len(versions) > 6 {
+		versions = versions[:6]
+	}
+
 	primary := versions[0]
 	app := StoreApp{
 		ID:          fmt.Sprintf("gh-%s", strings.ReplaceAll(repo, "/", "-")),
