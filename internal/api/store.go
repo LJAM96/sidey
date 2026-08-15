@@ -749,9 +749,9 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 		}
 		var jobID uuid.UUID
 		err = s.pool.QueryRow(r.Context(), `
-			INSERT INTO jobs (job_type, device_id, parameters, max_attempts)
-			VALUES ('livecontainer_push', $1, $2, 3)
-			RETURNING id`, req.DeviceID, params).Scan(&jobID)
+			INSERT INTO jobs (job_type, device_id, parameters, max_attempts, idempotency_key)
+			VALUES ('livecontainer_push', $1, $2, 3, $3)
+			RETURNING id`, req.DeviceID, params, uuid.New().String()).Scan(&jobID)
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "enqueuing LiveContainer push job failed")
 			return
@@ -793,9 +793,9 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 		}
 		var signJobID uuid.UUID
 		err = s.pool.QueryRow(r.Context(), `
-			INSERT INTO jobs (job_type, device_id, parameters, max_attempts)
-			VALUES ('sign', $1, $2, 5)
-			RETURNING id`, req.DeviceID, params).Scan(&signJobID)
+			INSERT INTO jobs (job_type, device_id, parameters, max_attempts, idempotency_key)
+			VALUES ('sign', $1, $2, 5, $3)
+			RETURNING id`, req.DeviceID, params, uuid.New().String()).Scan(&signJobID)
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "enqueuing sign job failed")
 			return
