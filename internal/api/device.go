@@ -89,7 +89,7 @@ func (s *Server) localDeviceServiceID(ctx context.Context) (uuid.UUID, error) {
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO agents (name, role, api_key_id, connection_state, last_heartbeat_at)
 		VALUES ($1, $2, $3, 'online', now())
-		ON CONFLICT (api_key_id) DO NOTHING`,
+		ON CONFLICT (api_key_id) WHERE api_key_id IS NOT NULL DO NOTHING`,
 		deviceServiceNodeName, deviceServiceRole, localDeviceServiceSentinel)
 	if err != nil {
 		return uuid.Nil, err
