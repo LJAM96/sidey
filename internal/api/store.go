@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,17 +24,30 @@ type StoreSource struct {
 	IsDefault bool   `json:"is_default"`
 }
 
+type AppVersion struct {
+	Version     string `json:"version"`
+	Channel     string `json:"channel"` // "stable", "beta", "nightly", "alpha"
+	BundleID    string `json:"bundle_id"`
+	DownloadURL string `json:"download_url"`
+	Size        int64  `json:"size"`
+	UpdatedDate string `json:"updated_date"`
+}
+
 type StoreApp struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Developer   string       `json:"developer"`
+	Description string       `json:"description"`
+	IconURL     string       `json:"icon_url"`
+	Source      string       `json:"source"`
+	SourceType  string       `json:"source_type"`
+	Versions    []AppVersion `json:"versions"`
+
+	// Convenience top-level fields (defaults to primary/stable version)
 	BundleID    string `json:"bundle_id"`
 	Version     string `json:"version"`
-	Developer   string `json:"developer"`
-	Description string `json:"description"`
-	IconURL     string `json:"icon_url"`
+	Channel     string `json:"channel"`
 	DownloadURL string `json:"download_url"`
-	Source      string `json:"source"`
-	SourceType  string `json:"source_type"`
 	Size        int64  `json:"size"`
 	UpdatedDate string `json:"updated_date"`
 }
@@ -216,7 +230,7 @@ func (s *Server) handleDeleteStoreSource(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": id})
 }
 
-// handleListStoreApps fetches and returns aggregated apps from all sources.
+// handleListStoreApps fetches and returns aggregated, unified apps from all sources.
 func (s *Server) handleListStoreApps(w http.ResponseWriter, r *http.Request) {
 	globalStoreCache.RLock()
 	if len(globalStoreCache.apps) > 0 && time.Since(globalStoreCache.updatedAt) < 10*time.Minute {
@@ -232,7 +246,7 @@ func (s *Server) handleListStoreApps(w http.ResponseWriter, r *http.Request) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 
 	for _, src := range sources {
 		src := src
@@ -260,6 +274,32 @@ func (s *Server) handleListStoreApps(w http.ResponseWriter, r *http.Request) {
 	globalStoreCache.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{"apps": allApps, "cached": false})
+}
+
+func normalizeBaseKey(bundleID, name string) string {
+	lowID := strings.ToLower(bundleID)
+	lowID = strings.TrimSuffix(lowID, ".beta")
+	lowID = strings.TrimSuffix(lowID, ".preview")
+	lowID = strings.TrimSuffix(lowID, ".nightly")
+	lowID = strings.TrimSuffix(lowID, "-beta")
+	if lowID != "" {
+		return lowID
+	}
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func detectChannel(bundleID, version, name, desc string) string {
+	combined := strings.ToLower(fmt.Sprintf("%s %s %s %s", bundleID, version, name, desc))
+	if strings.Contains(combined, "nightly") {
+		return "nightly"
+	}
+	if strings.Contains(combined, "alpha") {
+		return "alpha"
+	}
+	if strings.Contains(combined, "beta") || strings.Contains(combined, " rc") || strings.Contains(combined, "-rc") || strings.Contains(version, "b") {
+		return "beta"
+	}
+	return "stable"
 }
 
 func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
@@ -308,30 +348,89 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 		return nil
 	}
 
-	var results []StoreApp
 	sourceTitle := sourceData.Name
 	if sourceTitle == "" {
 		sourceTitle = src.Name
 	}
 
+	// Group versions by normalized base application
+	appMap := make(map[string]*StoreApp)
+	var order []string
+
 	for _, a := range sourceData.Apps {
 		if a.DownloadURL == "" {
 			continue
 		}
-		results = append(results, StoreApp{
-			ID:          "alt-" + a.BundleIdentifier,
-			Name:        a.Name,
-			BundleID:    a.BundleIdentifier,
+		baseKey := normalizeBaseKey(a.BundleIdentifier, a.Name)
+		channel := detectChannel(a.BundleIdentifier, a.Version, a.Name, a.LocalizedDescription)
+
+		ver := AppVersion{
 			Version:     a.Version,
-			Developer:   a.DeveloperName,
-			Description: a.LocalizedDescription,
-			IconURL:     a.IconURL,
+			Channel:     channel,
+			BundleID:    a.BundleIdentifier,
 			DownloadURL: a.DownloadURL,
-			Source:      sourceTitle,
-			SourceType:  "altstore",
 			Size:        a.Size,
 			UpdatedDate: a.VersionDate,
+		}
+
+		if existing, exists := appMap[baseKey]; exists {
+			// Append version
+			existing.Versions = append(existing.Versions, ver)
+			// Prefer stable metadata if existing was beta
+			if channel == "stable" {
+				existing.Name = a.Name
+				if a.IconURL != "" {
+					existing.IconURL = a.IconURL
+				}
+				if a.LocalizedDescription != "" {
+					existing.Description = a.LocalizedDescription
+				}
+			}
+		} else {
+			cleanName := a.Name
+			cleanName = strings.TrimSuffix(cleanName, " (Beta)")
+			cleanName = strings.TrimSuffix(cleanName, " Beta")
+
+			app := &StoreApp{
+				ID:          "alt-" + baseKey,
+				Name:        cleanName,
+				Developer:   a.DeveloperName,
+				Description: a.LocalizedDescription,
+				IconURL:     a.IconURL,
+				Source:      sourceTitle,
+				SourceType:  "altstore",
+				Versions:    []AppVersion{ver},
+			}
+			appMap[baseKey] = app
+			order = append(order, baseKey)
+		}
+	}
+
+	var results []StoreApp
+	for _, k := range order {
+		app := appMap[k]
+		// Sort versions: stable first, then by version/channel
+		sort.Slice(app.Versions, func(i, j int) bool {
+			if app.Versions[i].Channel == "stable" && app.Versions[j].Channel != "stable" {
+				return true
+			}
+			if app.Versions[j].Channel == "stable" && app.Versions[i].Channel != "stable" {
+				return false
+			}
+			return app.Versions[i].UpdatedDate > app.Versions[j].UpdatedDate
 		})
+
+		// Set primary fields
+		if len(app.Versions) > 0 {
+			primary := app.Versions[0]
+			app.BundleID = primary.BundleID
+			app.Version = primary.Version
+			app.Channel = primary.Channel
+			app.DownloadURL = primary.DownloadURL
+			app.Size = primary.Size
+			app.UpdatedDate = primary.UpdatedDate
+		}
+		results = append(results, *app)
 	}
 	return results
 }
@@ -356,6 +455,7 @@ func fetchGitHubApps(client *http.Client, src StoreSource) []StoreApp {
 		TagName     string `json:"tag_name"`
 		Name        string `json:"name"`
 		Body        string `json:"body"`
+		Prerelease  bool   `json:"prerelease"`
 		PublishedAt string `json:"published_at"`
 		Assets      []struct {
 			Name               string `json:"name"`
@@ -368,37 +468,85 @@ func fetchGitHubApps(client *http.Client, src StoreSource) []StoreApp {
 		return nil
 	}
 
-	var results []StoreApp
+	appName := src.Name
+	if appName == "" {
+		parts := strings.Split(repo, "/")
+		appName = parts[len(parts)-1]
+	}
+
+	var versions []AppVersion
+	var description string
+
 	for _, rel := range releases {
+		channel := "stable"
+		if rel.Prerelease || strings.Contains(strings.ToLower(rel.TagName), "nightly") || strings.Contains(strings.ToLower(rel.TagName), "beta") || strings.Contains(strings.ToLower(rel.TagName), "alpha") {
+			if strings.Contains(strings.ToLower(rel.TagName), "nightly") {
+				channel = "nightly"
+			} else if strings.Contains(strings.ToLower(rel.TagName), "alpha") {
+				channel = "alpha"
+			} else {
+				channel = "beta"
+			}
+		}
+
 		for _, asset := range rel.Assets {
 			if strings.HasSuffix(strings.ToLower(asset.Name), ".ipa") {
-				appName := src.Name
-				if appName == "" {
-					parts := strings.Split(repo, "/")
-					appName = parts[len(parts)-1]
+				vLabel := rel.TagName
+				cleanAssetName := strings.TrimSuffix(asset.Name, ".ipa")
+				if !strings.EqualFold(cleanAssetName, appName) && !strings.Contains(vLabel, cleanAssetName) {
+					vLabel = fmt.Sprintf("%s (%s)", rel.TagName, cleanAssetName)
 				}
-				results = append(results, StoreApp{
-					ID:          fmt.Sprintf("gh-%s-%s", repo, asset.Name),
-					Name:        fmt.Sprintf("%s (%s)", appName, strings.TrimSuffix(asset.Name, ".ipa")),
+
+				versions = append(versions, AppVersion{
+					Version:     vLabel,
+					Channel:     channel,
 					BundleID:    fmt.Sprintf("com.github.%s", strings.ReplaceAll(repo, "/", ".")),
-					Version:     rel.TagName,
-					Developer:   strings.Split(repo, "/")[0],
-					Description: rel.Body,
-					IconURL:     fmt.Sprintf("https://github.com/%s.png", strings.Split(repo, "/")[0]),
 					DownloadURL: asset.BrowserDownloadURL,
-					Source:      "GitHub: " + repo,
-					SourceType:  "github",
 					Size:        asset.Size,
 					UpdatedDate: rel.PublishedAt,
 				})
-				break
+
+				if description == "" && rel.Body != "" {
+					description = rel.Body
+				}
 			}
 		}
-		if len(results) > 0 {
-			break
-		}
 	}
-	return results
+
+	if len(versions) == 0 {
+		return nil
+	}
+
+	// Sort versions: stable first, then newest
+	sort.Slice(versions, func(i, j int) bool {
+		if versions[i].Channel == "stable" && versions[j].Channel != "stable" {
+			return true
+		}
+		if versions[j].Channel == "stable" && versions[i].Channel != "stable" {
+			return false
+		}
+		return versions[i].UpdatedDate > versions[j].UpdatedDate
+	})
+
+	primary := versions[0]
+	app := StoreApp{
+		ID:          fmt.Sprintf("gh-%s", strings.ReplaceAll(repo, "/", "-")),
+		Name:        appName,
+		Developer:   strings.Split(repo, "/")[0],
+		Description: description,
+		IconURL:     fmt.Sprintf("https://github.com/%s.png", strings.Split(repo, "/")[0]),
+		Source:      "GitHub: " + repo,
+		SourceType:  "github",
+		Versions:    versions,
+		BundleID:    primary.BundleID,
+		Version:     primary.Version,
+		Channel:     primary.Channel,
+		DownloadURL: primary.DownloadURL,
+		Size:        primary.Size,
+		UpdatedDate: primary.UpdatedDate,
+	}
+
+	return []StoreApp{app}
 }
 
 type storeInstallRequest struct {

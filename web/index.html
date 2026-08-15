@@ -1116,6 +1116,8 @@ function filterStoreApps() {
   renderStoreApps(filtered);
 }
 
+let selectedAppVersions = {};
+
 function renderStoreApps(apps) {
   const grid = document.getElementById("storeGrid");
   if (apps.length === 0) {
@@ -1123,32 +1125,76 @@ function renderStoreApps(apps) {
     return;
   }
 
-  grid.innerHTML = apps.map(a => `
-    <div class="store-card">
-      <div>
-        <div class="store-card-header">
-          <img class="store-icon" src="${a.icon_url || 'data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23647082%22 stroke-width=%222%22><rect x=%223%22 y=%223%22 width=%2218%22 height=%2218%22 rx=%224%22/></svg>'}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23647082%22 stroke-width=%222%22><rect x=%223%22 y=%223%22 width=%2218%22 height=%2218%22 rx=%224%22/></svg>'">
-          <div class="store-info">
-            <div class="store-app-name" title="${a.name}">${a.name}</div>
-            <div class="store-app-dev">${a.developer || 'Developer'} • <span class="mono">${a.version || 'v1.0'}</span></div>
-            <div style="margin-top:2px;"><span class="badge badge-neutral" style="font-size:9px; padding:1px 5px;">${a.source}</span></div>
-          </div>
-        </div>
-        <div class="store-desc" style="margin-top:10px;">${a.description || 'No description provided.'}</div>
-      </div>
+  grid.innerHTML = apps.map(a => {
+    const versions = (a.versions && a.versions.length > 0) ? a.versions : [{
+      version: a.version || '1.0',
+      channel: a.channel || 'stable',
+      download_url: a.download_url || a.downloadURL,
+      bundle_id: a.bundle_id,
+      size: a.size
+    }];
+    const activeIdx = selectedAppVersions[a.id] !== undefined ? selectedAppVersions[a.id] : 0;
+    const activeVer = versions[activeIdx] || versions[0];
+    const isBeta = activeVer.channel !== "stable";
+    const channelBadgeClass = isBeta ? "badge-warning" : "badge-success";
 
-      <div class="store-actions">
-        <button class="btn btn-sm btn-primary" style="flex:1; justify-content:center;" onclick="installStoreApp('${a.id}', 'livecontainer')">⚡ LiveContainer</button>
-        <button class="btn btn-sm" style="flex:1; justify-content:center;" onclick="installStoreApp('${a.id}', 'native')">📲 Native</button>
-        <a href="${a.downloadURL || a.download_url}" target="_blank" class="btn btn-sm" style="padding:5px 8px;" title="Download IPA">⬇</a>
+    const versionSelectorHtml = versions.length > 1 ? `
+      <div style="margin-top: 8px; display:flex; align-items:center; gap:6px;">
+        <span style="font-size:11px; color:var(--text-muted);">Version:</span>
+        <select class="select-input" style="padding:2px 8px; font-size:11px; width:auto; flex:1;" onchange="changeAppVersion('${a.id}', this.value)">
+          ${versions.map((v, i) => `
+            <option value="${i}" ${i === activeIdx ? 'selected' : ''}>
+              ${v.channel === 'stable' ? '🟢 Stable' : v.channel === 'beta' ? '🟡 Beta' : '🔵 ' + v.channel} (${v.version})
+            </option>
+          `).join('')}
+        </select>
       </div>
-    </div>
-  `).join("");
+    ` : `
+      <div style="margin-top: 6px; display:flex; gap:6px; align-items:center;">
+        <span class="badge ${channelBadgeClass}" style="font-size:9px; padding:2px 6px;">${activeVer.channel.toUpperCase()}</span>
+        <span class="mono" style="font-size:11px; color:var(--text-secondary);">${activeVer.version}</span>
+      </div>
+    `;
+
+    return `
+      <div class="store-card" id="card-${a.id}">
+        <div>
+          <div class="store-card-header">
+            <img class="store-icon" src="${a.icon_url || 'data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23647082%22 stroke-width=%222%22><rect x=%223%22 y=%223%22 width=%2218%22 height=%2218%22 rx=%224%22/></svg>'}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23647082%22 stroke-width=%222%22><rect x=%223%22 y=%223%22 width=%2218%22 height=%2218%22 rx=%224%22/></svg>'">
+            <div class="store-info">
+              <div class="store-app-name" title="${a.name}">${a.name}</div>
+              <div class="store-app-dev">${a.developer || 'Developer'} • <span class="badge badge-neutral" style="font-size:9px; padding:1px 5px;">${a.source}</span></div>
+              ${versionSelectorHtml}
+            </div>
+          </div>
+          <div class="store-desc" style="margin-top:10px;">${a.description || 'No description provided.'}</div>
+        </div>
+
+        <div class="store-actions">
+          <button class="btn btn-sm btn-primary" style="flex:1; justify-content:center;" onclick="installStoreApp('${a.id}', 'livecontainer')">⚡ LiveContainer</button>
+          <button class="btn btn-sm" style="flex:1; justify-content:center;" onclick="installStoreApp('${a.id}', 'native')">📲 Native</button>
+          <a href="${activeVer.download_url}" target="_blank" class="btn btn-sm" style="padding:5px 8px;" title="Download IPA">⬇</a>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function changeAppVersion(appId, versionIdx) {
+  selectedAppVersions[appId] = parseInt(versionIdx, 10);
+  filterStoreApps();
 }
 
 async function installStoreApp(appId, mode) {
   const app = storeAppsList.find(a => a.id === appId);
   if (!app) return;
+
+  const versions = (app.versions && app.versions.length > 0) ? app.versions : [{
+    version: app.version || '1.0',
+    download_url: app.download_url || app.downloadURL
+  }];
+  const activeIdx = selectedAppVersions[app.id] !== undefined ? selectedAppVersions[app.id] : 0;
+  const activeVer = versions[activeIdx] || versions[0];
 
   const deviceId = targetDeviceSelect.value;
   if (!deviceId) {
@@ -1157,22 +1203,22 @@ async function installStoreApp(appId, mode) {
   }
 
   const modeName = mode === "livecontainer" ? "LiveContainer (0 slots used)" : "Native Home Screen (1 slot)";
-  if (!confirm(`Install "${app.name}" to your device via ${modeName}?`)) return;
+  if (!confirm(`Install "${app.name} (${activeVer.version})" to your device via ${modeName}?`)) return;
 
   try {
     const res = await apiFetch("/api/v1/admin/store/install", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: app.name,
-        download_url: app.download_url || app.downloadURL,
+        name: `${app.name}-${activeVer.version}`,
+        download_url: activeVer.download_url,
         device_id: deviceId,
         mode: mode,
         apple_id: targetAccountSelect.value
       })
     });
     if (!res.ok) throw new Error(await res.text());
-    alert(`Started downloading and installing "${app.name}"! Track progress in the Job Activity table.`);
+    alert(`Started downloading and installing "${app.name} (${activeVer.version})"! Track progress in the Job Activity table.`);
     fetchDashboard();
   } catch(err) {
     alert("Failed to start store installation: " + err.message);
