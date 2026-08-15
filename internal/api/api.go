@@ -91,6 +91,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/devices", s.admin(s.handleAdminCreateDevice))
 	mux.Handle("DELETE /api/v1/admin/devices/{id}", s.admin(s.handleAdminDeleteDevice))
 
+	mux.Handle("GET /api/v1/admin/store/sources", s.admin(s.handleListStoreSources))
+	mux.Handle("POST /api/v1/admin/store/sources", s.admin(s.handleAddStoreSource))
+	mux.Handle("DELETE /api/v1/admin/store/sources/{id}", s.admin(s.handleDeleteStoreSource))
+	mux.Handle("GET /api/v1/admin/store/apps", s.admin(s.handleListStoreApps))
+	mux.Handle("POST /api/v1/admin/store/install", s.admin(s.handleStoreInstall))
+
 	mux.Handle("POST /api/v1/artifacts", s.admin(s.handleUploadArtifact))
 	mux.Handle("PATCH /api/v1/artifacts/{id}", s.admin(s.handleSetArtifactState))
 	mux.Handle("GET /api/v1/artifacts/{id}/download", s.admin(s.handleDownloadArtifact))

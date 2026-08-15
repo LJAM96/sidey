@@ -332,6 +332,81 @@
     flex-wrap: wrap;
   }
 
+  /* Store & Catalog Styles */
+  .store-toolbar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .store-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+  }
+  .store-card {
+    background: var(--bg);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 12px;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+  }
+  .store-card:hover {
+    border-color: var(--border-hover);
+    transform: translateY(-2px);
+  }
+  .store-card-header {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .store-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    background: var(--surface-elevated);
+    object-fit: cover;
+    flex-shrink: 0;
+    border: 1px solid var(--surface-border);
+  }
+  .store-info {
+    flex: 1;
+    overflow: hidden;
+  }
+  .store-app-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .store-app-dev {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .store-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    max-height: 50px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+  }
+  .store-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
   .table-container {
     overflow-x: auto;
     margin-top: 10px;
@@ -505,6 +580,29 @@
       </div>
     </div>
   </div>
+
+  <!-- App Store (AltStore Sources & GitHub Releases) -->
+  <section class="card">
+    <div class="card-title">
+      <span>App Catalog & Store (AltStore & GitHub Sources)</span>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn btn-sm" onclick="fetchStoreApps(true)">↻ Refresh Store</button>
+        <button class="btn btn-sm btn-primary" onclick="openAddSourceModal()">+ Add Source / GitHub</button>
+      </div>
+    </div>
+
+    <div class="store-toolbar">
+      <input id="storeSearch" type="text" class="input-field" placeholder="Search apps (e.g. Delta, LiveContainer, UTM, PPSSPP)..." style="max-width:320px;" oninput="filterStoreApps()">
+      <select id="storeSourceFilter" class="select-input" style="max-width:220px;" onchange="filterStoreApps()">
+        <option value="all">All Sources</option>
+      </select>
+      <span id="storeAppCount" class="text-muted" style="font-size:12px;">Loading catalog...</span>
+    </div>
+
+    <div id="storeGrid" class="store-grid">
+      <div class="text-muted" style="grid-column: 1/-1; padding:20px; text-align:center;">Fetching catalog from sources...</div>
+    </div>
+  </section>
 
   <!-- Connected Devices Section -->
   <section class="card">
@@ -712,10 +810,38 @@
   </div>
 </div>
 
+<!-- Add Store Source Modal -->
+<div id="addSourceModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(4px);">
+  <div style="background:var(--surface); border:1px solid var(--surface-border); border-radius:var(--radius-lg); width:100%; max-width:480px; padding:24px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <div style="font-size:16px; font-weight:600;">Add App Source / GitHub Repo</div>
+      <button style="background:none; border:none; color:var(--text-muted); font-size:22px; cursor:pointer;" onclick="closeAddSourceModal()">&times;</button>
+    </div>
+    <p style="font-size:12px; color:var(--text-secondary); margin-bottom:14px;">
+      Enter an AltStore JSON source URL (e.g. <code>https://apps.altstore.io</code>) or a public GitHub repository (e.g. <code>utmapp/UTM</code>).
+    </p>
+    <form id="addSourceForm" class="account-form">
+      <div>
+        <label class="input-label">Source URL or GitHub Repo</label>
+        <input type="text" id="newSourceUrl" class="input-field" placeholder="e.g. utmapp/UTM or https://apps.altstore.io" required>
+      </div>
+      <div>
+        <label class="input-label">Custom Display Name (Optional)</label>
+        <input type="text" id="newSourceName" class="input-field" placeholder="e.g. UTM Virtual Machines">
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:10px;">
+        <button type="button" class="btn" onclick="closeAddSourceModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Source</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script>
 let selectedFile = null;
 let liveDevices = [];
 let liveAccounts = [];
+let storeAppsList = [];
 
 async function apiFetch(url, options = {}) {
   options.headers = options.headers || {};
@@ -949,6 +1075,111 @@ sideloadBtn.onclick = async () => {
 };
 
 // -------------------------------------------------------------
+// App Store & Catalog Fetching & Actions
+// -------------------------------------------------------------
+async function fetchStoreApps(forceRefresh = false) {
+  const grid = document.getElementById("storeGrid");
+  const countEl = document.getElementById("storeAppCount");
+  countEl.textContent = "Refreshing catalog...";
+
+  try {
+    const res = await apiFetch("/api/v1/admin/store/apps");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    storeAppsList = data.apps || [];
+    countEl.textContent = `${storeAppsList.length} Apps available`;
+
+    // Populate source filter
+    const sourcesRes = await apiFetch("/api/v1/admin/store/sources");
+    if (sourcesRes.ok) {
+      const srcData = await sourcesRes.json();
+      const filterSel = document.getElementById("storeSourceFilter");
+      filterSel.innerHTML = '<option value="all">All Sources</option>' +
+        (srcData.sources || []).map(s => `<option value="${s.name}">${s.name} (${s.type})</option>`).join("");
+    }
+
+    renderStoreApps(storeAppsList);
+  } catch(e) {
+    grid.innerHTML = `<div class="text-muted" style="grid-column: 1/-1; padding:20px; text-align:center;">Failed to load store: ${e.message}</div>`;
+  }
+}
+
+function filterStoreApps() {
+  const query = document.getElementById("storeSearch").value.toLowerCase().trim();
+  const sourceFilter = document.getElementById("storeSourceFilter").value;
+
+  const filtered = storeAppsList.filter(app => {
+    const matchQuery = !query || app.name.toLowerCase().includes(query) || (app.description && app.description.toLowerCase().includes(query)) || (app.developer && app.developer.toLowerCase().includes(query));
+    const matchSource = sourceFilter === "all" || app.source === sourceFilter;
+    return matchQuery && matchSource;
+  });
+  renderStoreApps(filtered);
+}
+
+function renderStoreApps(apps) {
+  const grid = document.getElementById("storeGrid");
+  if (apps.length === 0) {
+    grid.innerHTML = `<div class="text-muted" style="grid-column: 1/-1; padding:20px; text-align:center;">No apps found matching your search.</div>`;
+    return;
+  }
+
+  grid.innerHTML = apps.map(a => `
+    <div class="store-card">
+      <div>
+        <div class="store-card-header">
+          <img class="store-icon" src="${a.icon_url || 'data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23647082%22 stroke-width=%222%22><rect x=%223%22 y=%223%22 width=%2218%22 height=%2218%22 rx=%224%22/></svg>'}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23647082%22 stroke-width=%222%22><rect x=%223%22 y=%223%22 width=%2218%22 height=%2218%22 rx=%224%22/></svg>'">
+          <div class="store-info">
+            <div class="store-app-name" title="${a.name}">${a.name}</div>
+            <div class="store-app-dev">${a.developer || 'Developer'} • <span class="mono">${a.version || 'v1.0'}</span></div>
+            <div style="margin-top:2px;"><span class="badge badge-neutral" style="font-size:9px; padding:1px 5px;">${a.source}</span></div>
+          </div>
+        </div>
+        <div class="store-desc" style="margin-top:10px;">${a.description || 'No description provided.'}</div>
+      </div>
+
+      <div class="store-actions">
+        <button class="btn btn-sm btn-primary" style="flex:1; justify-content:center;" onclick="installStoreApp('${a.id}', 'livecontainer')">⚡ LiveContainer</button>
+        <button class="btn btn-sm" style="flex:1; justify-content:center;" onclick="installStoreApp('${a.id}', 'native')">📲 Native</button>
+        <a href="${a.downloadURL || a.download_url}" target="_blank" class="btn btn-sm" style="padding:5px 8px;" title="Download IPA">⬇</a>
+      </div>
+    </div>
+  `).join("");
+}
+
+async function installStoreApp(appId, mode) {
+  const app = storeAppsList.find(a => a.id === appId);
+  if (!app) return;
+
+  const deviceId = targetDeviceSelect.value;
+  if (!deviceId) {
+    alert("Please select a target device in the Sideload panel above first");
+    return;
+  }
+
+  const modeName = mode === "livecontainer" ? "LiveContainer (0 slots used)" : "Native Home Screen (1 slot)";
+  if (!confirm(`Install "${app.name}" to your device via ${modeName}?`)) return;
+
+  try {
+    const res = await apiFetch("/api/v1/admin/store/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: app.name,
+        download_url: app.download_url || app.downloadURL,
+        device_id: deviceId,
+        mode: mode,
+        apple_id: targetAccountSelect.value
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    alert(`Started downloading and installing "${app.name}"! Track progress in the Job Activity table.`);
+    fetchDashboard();
+  } catch(err) {
+    alert("Failed to start store installation: " + err.message);
+  }
+}
+
+// -------------------------------------------------------------
 // LiveContainer Modal & 1-Click Installation
 // -------------------------------------------------------------
 function openLiveContainerModal() {
@@ -988,6 +1219,38 @@ document.getElementById("installLcForm").onsubmit = async (e) => {
 };
 
 // -------------------------------------------------------------
+// Add Store Source Modal
+// -------------------------------------------------------------
+function openAddSourceModal() {
+  document.getElementById("addSourceModal").style.display = "flex";
+}
+function closeAddSourceModal() {
+  document.getElementById("addSourceModal").style.display = "none";
+}
+
+document.getElementById("addSourceForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const url = document.getElementById("newSourceUrl").value.trim();
+  const name = document.getElementById("newSourceName").value.trim();
+
+  try {
+    const res = await apiFetch("/api/v1/admin/store/sources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: url, name: name })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    closeAddSourceModal();
+    document.getElementById("newSourceUrl").value = "";
+    document.getElementById("newSourceName").value = "";
+    alert("Source added successfully!");
+    fetchStoreApps(true);
+  } catch(err) {
+    alert("Failed to add source: " + err.message);
+  }
+};
+
+// -------------------------------------------------------------
 // Apple Accounts Modal & Management
 // -------------------------------------------------------------
 function openAddAccountModal() {
@@ -1006,9 +1269,7 @@ document.getElementById("addAccountForm").onsubmit = async (e) => {
   try {
     const res = await apiFetch("/api/v1/admin/apple-accounts/credentials", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ apple_id: appleId, apple_password: applePassword, two_factor_code: twoFactorCode })
     });
     if (!res.ok) throw new Error(await res.text());
@@ -1063,9 +1324,7 @@ document.getElementById("addDeviceForm").onsubmit = async (e) => {
   try {
     const res = await apiFetch("/api/v1/admin/devices", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         device_name: name,
         platform: platform,
@@ -1285,15 +1544,14 @@ function selectDeviceForSideload(devId) {
 async function approveArtifact(artId) {
   await apiFetch(`/api/v1/artifacts/${artId}`, {
     method: "PATCH",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ state: "approved" })
   });
   fetchDashboard();
 }
 
 fetchDashboard();
+fetchStoreApps();
 setInterval(fetchDashboard, 4000);
 </script>
 </body>
