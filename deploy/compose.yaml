@@ -95,6 +95,7 @@ services:
       context: ..
       dockerfile: packaging/docker/signing-worker/Dockerfile
     restart: unless-stopped
+    user: "10001:10001"
     # Host networking: the worker signs via Apple/anisette services that live
     # on the host loopback (omnisette on 127.0.0.1:6970, control-plane on
     # 127.0.0.1:8080), exactly like the refresh agent on the host.
@@ -116,7 +117,7 @@ services:
     # and anisette state here while a signing job runs. tmpfs means plaintext
     # is never touched to disk and is wiped when the container stops/crashes.
     tmpfs:
-      - /run/sidey/signing-state:uid=65534,gid=65534,mode=0770,size=256m
+      - /run/sidey/signing-state:uid=10001,gid=10001,mode=0770,size=256m
     secrets:
       - apple_credential_key
       - apple_credentials

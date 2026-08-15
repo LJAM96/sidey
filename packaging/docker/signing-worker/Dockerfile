@@ -22,13 +22,13 @@ RUN CGO_ENABLED=0 go build -o /out/signing-worker ./cmd/signing-worker
 # Stage 3: runtime. Needs openssl + ca-certificates for Apple TLS and anisette.
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates openssl \
-    && mkdir -p /var/lib/sidey/signing-worker \
-    && chown 65534:65534 /var/lib/sidey/signing-worker \
-    && mkdir -p /run/sidey \
-    && chown 65534:65534 /run/sidey
+    && addgroup -g 10001 -S sidey \
+    && adduser -u 10001 -S sidey -G sidey \
+    && mkdir -p /var/lib/sidey/signing-worker /run/sidey /run/sidey/signing-state \
+    && chown -R 10001:10001 /var/lib/sidey/signing-worker /run/sidey
 COPY --from=signonly-builder /src/target/release/signonly /usr/local/bin/signonly
 COPY --from=worker-builder /out/signing-worker /usr/local/bin/signing-worker
-USER 65534:65534
+USER 10001:10001
 EXPOSE 8090
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 --start-period=5s \
   CMD wget -qO- http://127.0.0.1:8090/healthz || exit 1
