@@ -69,6 +69,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("POST /api/v1/admin/enrolment-tokens", s.admin(s.handleCreateEnrolmentToken))
 
+	mux.Handle("POST /api/v1/admin/apple-accounts/credentials", s.admin(s.handleUpdateAppleCredentials))
+	mux.Handle("POST /api/v1/admin/deploy", s.admin(s.handleAdminDeploy))
+
 	mux.Handle("POST /api/v1/artifacts", s.admin(s.handleUploadArtifact))
 	mux.Handle("PATCH /api/v1/artifacts/{id}", s.admin(s.handleSetArtifactState))
 	mux.Handle("GET /api/v1/artifacts/{id}/download", s.admin(s.handleDownloadArtifact))

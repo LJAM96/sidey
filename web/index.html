@@ -3,87 +3,980 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sidey</title>
+<title>Sidey — iOS & tvOS Sideload Control Plane</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  :root { color-scheme: dark; }
-  body { font-family: ui-monospace, monospace; margin: 0; background: #111; color: #ddd; }
-  header { padding: 12px 20px; background: #1a1a1a; border-bottom: 1px solid #333; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
-  h1 { font-size: 18px; margin: 0; color: #fff; }
-  #key { background: #222; color: #ddd; border: 1px solid #444; padding: 6px 8px; width: 320px; }
-  button { background: #2a2a2a; color: #fff; border: 1px solid #444; padding: 6px 12px; cursor: pointer; }
-  button:hover { background: #333; }
-  #status { color: #8a8; }
-  main { padding: 20px; }
-  section { margin-bottom: 28px; }
-  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: #999; border-bottom: 1px solid #2a2a2a; padding-bottom: 6px; }
-  table { border-collapse: collapse; width: 100%; font-size: 12px; }
-  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid #242424; white-space: nowrap; }
-  th { color: #aaa; background: #161616; position: sticky; top: 0; }
-  tr:hover td { background: #1c1c1c; }
-  .ok { color: #6c6; } .warn { color: #cc6; } .bad { color: #c66; } .muted { color: #777; }
+  :root {
+    --bg: #0d0f12;
+    --surface: #15181e;
+    --surface-elevated: #1c2028;
+    --surface-border: #262b36;
+    --border-hover: #373e4d;
+    --text-primary: #f0f3f8;
+    --text-secondary: #9aa4b2;
+    --text-muted: #647082;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-subtle: rgba(37, 99, 235, 0.15);
+    --success: #10b981;
+    --success-bg: rgba(16, 185, 129, 0.12);
+    --warning: #f59e0b;
+    --warning-bg: rgba(245, 158, 11, 0.12);
+    --error: #ef4444;
+    --error-bg: rgba(239, 68, 68, 0.12);
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: var(--bg);
+    color: var(--text-primary);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  code, pre, .mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Header */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--surface-border);
+    padding: 14px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .brand-logo {
+    width: 28px;
+    height: 28px;
+    background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 15px;
+    color: #fff;
+  }
+  .brand-title {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.2px;
+  }
+  .brand-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  .auth-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .auth-input {
+    background: var(--bg);
+    border: 1px solid var(--surface-border);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    width: 240px;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+  .auth-input:focus { border-color: var(--accent); }
+
+  .btn {
+    background: var(--surface-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--surface-border);
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+  }
+  .btn:hover { background: var(--border-hover); border-color: var(--border-hover); }
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+  .live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--success);
+    background: var(--success-bg);
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-weight: 500;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+  /* Main Container */
+  main {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 24px;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  /* Sideload Hub Hero */
+  .hub-grid {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 900px) {
+    .hub-grid { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-md);
+    padding: 20px;
+  }
+  .card-title {
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  /* Drag Drop Zone */
+  .drop-zone {
+    border: 2px dashed var(--surface-border);
+    border-radius: var(--radius-md);
+    padding: 24px;
+    text-align: center;
+    background: var(--bg);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 120px;
+  }
+  .drop-zone.dragover {
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+  }
+  .drop-icon {
+    font-size: 28px;
+    color: var(--text-muted);
+  }
+  .drop-text {
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .drop-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* Form Row */
+  .form-row {
+    margin-top: 14px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .select-input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--surface-border);
+    color: var(--text-primary);
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    outline: none;
+  }
+  .select-input:focus { border-color: var(--accent); }
+
+  /* Sideload Progress Steps */
+  .progress-tracker {
+    margin-top: 16px;
+    background: var(--surface-elevated);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .step-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .step-status {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    background: var(--surface-border);
+    color: var(--text-muted);
+  }
+  .step-status.active { background: var(--warning); color: #000; animation: pulse 1.5s infinite; }
+  .step-status.done { background: var(--success); color: #000; font-weight: bold; }
+  @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+
+  /* Apple Account Card */
+  .account-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .meta-item {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    border-bottom: 1px solid var(--surface-border);
+    padding-bottom: 8px;
+  }
+  .meta-label { color: var(--text-muted); }
+  .meta-val { font-weight: 500; }
+
+  /* Tables */
+  .table-container {
+    overflow-x: auto;
+    margin-top: 10px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--surface-border);
+    white-space: nowrap;
+  }
+  th {
+    color: var(--text-secondary);
+    background: var(--surface-elevated);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  tr:hover td { background: var(--surface-elevated); }
+
+  /* Badges */
+  .badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-success { background: var(--success-bg); color: var(--success); }
+  .badge-warning { background: var(--warning-bg); color: var(--warning); }
+  .badge-error { background: var(--error-bg); color: var(--error); }
+  .badge-neutral { background: var(--surface-elevated); color: var(--text-secondary); }
+
+  /* Modals */
+  .modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    backdrop-filter: blur(4px);
+  }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-lg);
+    width: 100%;
+    max-width: 440px;
+    padding: 24px;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+  }
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 18px;
+  }
+  .modal-title { font-size: 16px; font-weight: 600; }
+  .close-btn {
+    background: none; border: none; color: var(--text-muted);
+    font-size: 20px; cursor: pointer;
+  }
+  .modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .input-group label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+  .input-group input {
+    background: var(--bg);
+    border: 1px solid var(--surface-border);
+    color: var(--text-primary);
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    outline: none;
+  }
+  .input-group input:focus { border-color: var(--accent); }
 </style>
 </head>
 <body>
+
 <header>
-  <h1>Sidey control plane</h1>
-  <input id="key" type="password" placeholder="admin API key">
-  <button id="save">Save</button>
-  <span id="status"></span>
+  <div class="brand">
+    <div class="brand-logo">S</div>
+    <div>
+      <div class="brand-title">Sidey Control Plane</div>
+      <div class="brand-sub">Autonomous iOS & tvOS Sideloading</div>
+    </div>
+  </div>
+
+  <div class="auth-bar">
+    <input id="apiKey" class="auth-input" type="password" placeholder="Admin API Key">
+    <button id="saveKeyBtn" class="btn btn-primary">Connect</button>
+    <div id="connBadge" class="live-badge" style="display:none;">
+      <span class="dot"></span> <span id="connText">Live</span>
+    </div>
+  </div>
 </header>
+
 <main>
-  <section><h2>Agents</h2><div id="agents"></div></section>
-  <section><h2>Devices</h2><div id="devices"></div></section>
-  <section><h2>Jobs</h2><div id="jobs"></div></section>
-  <section><h2>Applications</h2><div id="applications"></div></section>
-  <section><h2>Artifacts</h2><div id="artifacts"></div></section>
-  <section><h2>Deployments</h2><div id="deployments"></div></section>
-  <section><h2>Refresh calendar</h2><div id="refresh"></div></section>
-  <section><h2>Signed artifacts</h2><div id="signed-artifacts"></div></section>
-  <section><h2>Apple accounts</h2><div id="accounts"></div></section>
+  <!-- Sideload Hub & Apple Account -->
+  <div class="hub-grid">
+    <!-- Quick Sideload Panel -->
+    <div class="card">
+      <div class="card-title">
+        <span>Sideload Application</span>
+        <span id="uploadBadge" class="badge badge-neutral">Ready</span>
+      </div>
+
+      <input type="file" id="ipaFileInput" accept=".ipa" style="display: none;">
+      <div id="dropZone" class="drop-zone">
+        <div class="drop-icon">📦</div>
+        <div id="fileLabel" class="drop-text">Click or Drag & Drop .ipa file here</div>
+        <div class="drop-hint">Accepts standard iOS & tvOS IPA archives</div>
+      </div>
+
+      <div class="form-row">
+        <select id="targetDeviceSelect" class="select-input">
+          <option value="">Select Target Device...</option>
+        </select>
+        <button id="sideloadBtn" class="btn btn-primary" disabled>Sign & Sideload</button>
+      </div>
+
+      <!-- Sideloading Progress Box -->
+      <div id="progressTracker" class="progress-tracker">
+        <div class="step-row" id="step1">
+          <div class="step-status" id="step1Status">1</div>
+          <span>Upload source IPA archive to Control Plane</span>
+        </div>
+        <div class="step-row" id="step2">
+          <div class="step-status" id="step2Status">2</div>
+          <span>Approve artifact & check quarantine state</span>
+        </div>
+        <div class="step-row" id="step3">
+          <div class="step-status" id="step3Status">3</div>
+          <span>Sign with Apple Certificate & embedded profile</span>
+        </div>
+        <div class="step-row" id="step4">
+          <div class="step-status" id="step4Status">4</div>
+          <span>Deploy to device via wireless RSD tunnel / USB</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Apple Developer Account Card -->
+    <div class="card">
+      <div class="card-title">
+        <span>Apple Developer Account</span>
+        <button id="openAccountModalBtn" class="btn btn-sm">Update Account</button>
+      </div>
+
+      <div class="account-meta" id="accountSummary">
+        <div class="meta-item">
+          <span class="meta-label">Account Label</span>
+          <span class="meta-val" id="accEmail">Loading...</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Team Identifier</span>
+          <span class="meta-val mono" id="accTeam">Loading...</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Auth State</span>
+          <span id="accStateBadge" class="badge badge-neutral">Unknown</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Registered Devices</span>
+          <span class="meta-val" id="accDevices">0 / 100</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Active Certificates</span>
+          <span class="meta-val" id="accCerts">0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Connected Devices Section -->
+  <section class="card">
+    <div class="card-title">
+      <span>Connected Devices Fleet</span>
+      <span id="deviceCountBadge" class="badge badge-neutral">0 Devices</span>
+    </div>
+    <div class="table-container">
+      <table id="devicesTable">
+        <thead>
+          <tr>
+            <th>Device Name</th>
+            <th>Platform</th>
+            <th>Model</th>
+            <th>OS Version</th>
+            <th>UDID</th>
+            <th>Pairing Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="devicesList">
+          <tr><td colspan="7" class="text-muted" style="text-align:center;">No devices detected yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Live Job Activity -->
+  <section class="card">
+    <div class="card-title">
+      <span>Job Queue & Intent Execution</span>
+      <span id="activeJobsBadge" class="badge badge-neutral">0 Active</span>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Job ID</th>
+            <th>Type</th>
+            <th>State</th>
+            <th>Attempt</th>
+            <th>Created</th>
+            <th>Error Details</th>
+          </tr>
+        </thead>
+        <tbody id="jobsList">
+          <tr><td colspan="6" class="text-muted" style="text-align:center;">No jobs yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Deployments & Auto-Refresh Calendar -->
+  <section class="card">
+    <div class="card-title">
+      <span>Deployments & Auto-Refresh Calendar</span>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th>Profile Expiry</th>
+            <th>Next Refresh Due</th>
+            <th>Last Result</th>
+            <th>Last Refresh</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="refreshList">
+          <tr><td colspan="6" class="text-muted" style="text-align:center;">No active deployments</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Artifacts Explorer -->
+  <section class="card">
+    <div class="card-title">
+      <span>Applications & Artifacts</span>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Filename</th>
+            <th>Bundle Identifier</th>
+            <th>Version</th>
+            <th>Platform</th>
+            <th>Quarantine State</th>
+            <th>SHA256</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="artifactsList">
+          <tr><td colspan="7" class="text-muted" style="text-align:center;">No artifacts uploaded</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 </main>
+
+<!-- Modal for Apple Account Login -->
+<div class="modal-overlay" id="accountModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Sign Into Apple Developer Account</div>
+      <button class="close-btn" id="closeAccountModalBtn">&times;</button>
+    </div>
+    <form class="modal-form" id="appleAccountForm">
+      <div class="input-group">
+        <label for="appleIdInput">Apple ID (Email)</label>
+        <input type="email" id="appleIdInput" placeholder="apple@example.com" required>
+      </div>
+      <div class="input-group">
+        <label for="applePasswordInput">Apple Password</label>
+        <input type="password" id="applePasswordInput" placeholder="Account Password" required>
+      </div>
+      <div class="input-group">
+        <label for="apple2FaInput">2FA Verification Code (Optional / SMS / Device)</label>
+        <input type="text" id="apple2FaInput" placeholder="6-digit code if prompted">
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:10px;">
+        <button type="button" class="btn" id="cancelAccountBtn">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="saveAccountBtn">Save & Authenticate</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script>
-const stateClass = s => s === "completed" || s === "ok" || s === "online" || s === "connected" ? "ok"
-  : s === "pending" || s === "claimed" || s === "in_progress" ? "warn" : "bad";
-function table(title, rows, cols) {
-  if (!rows.length) return `<p class="muted">no ${title}</p>`;
-  const head = cols.map(c => `<th>${c}</th>`).join("");
-  const body = rows.map(r => `<tr>${cols.map(c => `<td class="${c === "state" || c === "connection_state" ? stateClass(r[c]) : ""}">${r[c] ?? ""}</td>`).join("")}</tr>`).join("");
-  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+let selectedFile = null;
+let liveDevices = [];
+let pollingTimer = null;
+
+function getApiKey() {
+  return document.getElementById("apiKey").value.trim() || localStorage.getItem("sidey_admin_key") || "";
 }
-function fmt(v) {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "object") {
-    if (v instanceof Date || /^\d{4}-\d{2}-\d{2}/.test(v)) return new Date(v).toLocaleString();
-    return JSON.stringify(v);
-  }
-  return String(v);
+
+function updateBadge(badgeEl, state) {
+  badgeEl.className = "badge " + (
+    state === "completed" || state === "ok" || state === "online" || state === "paired" || state === "approved" || state === "authenticated" ? "badge-success" :
+    state === "pending" || state === "in_progress" || state === "claimed" || state === "authenticating" ? "badge-warning" : "badge-error"
+  );
+  badgeEl.textContent = state;
 }
-async function load() {
-  const key = document.getElementById("key").value;
-  if (!key) return;
-  const res = await fetch("/api/v1/dashboard/agents", { headers: { Authorization: "Bearer " + key } });
-  if (!res.ok) { document.getElementById("status").textContent = "unauthorized"; return; }
-  document.getElementById("status").textContent = new Date().toLocaleTimeString();
-  for (const [id, cols] of Object.entries({
-    agents: ["name", "connection_state", "last_heartbeat_at", "software_version", "tailnet_identity"],
-    devices: ["udid", "platform", "device_name", "os_version", "agent_name", "pairing_status"],
-    jobs: ["id", "job_type", "state", "attempt", "device_id", "error_category", "created_at"],
-    applications: ["name", "publisher", "trust_classification", "created_at"],
-    artifacts: ["sha256", "filename", "version", "build_number", "bundle_identifier", "platform", "min_os_version", "quarantine_state", "imported_at"],
-    deployments: ["id", "target", "desired_version", "current_state", "updated_at"],
-    refresh: ["device_name", "profile_expiry_at", "next_refresh_due_at", "last_refresh_result", "last_refresh_at", "refresh_job_state", "error_category", "job_updated_at"],
-    "signed-artifacts": ["signed_ipa_sha256", "signed_bundle_identifier", "profile_expiry_at", "signed_at", "filename", "version", "source_bundle", "device_name", "udid", "label", "team_identifier", "serial_number"],
-    accounts: ["label", "team_identifier", "team_type", "auth_state", "last_auth_at", "registered_app_id_count", "registered_device_count", "locked", "failure_count", "cert_count"],
-  })) {
-    const t = await (await fetch("/api/v1/dashboard/" + id, { headers: { Authorization: "Bearer " + key } })).json();
-    const rows = t.rows.map(r => Object.fromEntries(t.columns.map((c, i) => [c, fmt(Object.values(r)[i])])));
-    document.getElementById(id).innerHTML = table(id, rows, cols);
+
+function fmtDate(d) {
+  if (!d) return "—";
+  try {
+    const dt = new Date(d);
+    return dt.toLocaleString();
+  } catch(e) {
+    return String(d);
   }
 }
-document.getElementById("save").onclick = () => { localStorage.setItem("sidey_admin_key", document.getElementById("key").value); load(); };
-document.getElementById("key").value = localStorage.getItem("sidey_admin_key") || "";
-setInterval(load, 10000);
-load();
+
+// -------------------------------------------------------------
+// Sideload Drag & Drop and File Picker Handling
+// -------------------------------------------------------------
+const dropZone = document.getElementById("dropZone");
+const ipaFileInput = document.getElementById("ipaFileInput");
+const fileLabel = document.getElementById("fileLabel");
+const sideloadBtn = document.getElementById("sideloadBtn");
+const targetDeviceSelect = document.getElementById("targetDeviceSelect");
+
+dropZone.onclick = () => ipaFileInput.click();
+dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add("dragover"); };
+dropZone.ondragleave = () => dropZone.classList.remove("dragover");
+dropZone.ondrop = (e) => {
+  e.preventDefault();
+  dropZone.classList.remove("dragover");
+  if (e.dataTransfer.files.length > 0) {
+    handleFileSelected(e.dataTransfer.files[0]);
+  }
+};
+ipaFileInput.onchange = (e) => {
+  if (e.target.files.length > 0) {
+    handleFileSelected(e.target.files[0]);
+  }
+};
+
+function handleFileSelected(file) {
+  if (!file.name.endsWith(".ipa")) {
+    alert("Please select a valid .ipa file archive");
+    return;
+  }
+  selectedFile = file;
+  fileLabel.textContent = `Selected: ${file.name} (${(file.size / (1024*1024)).toFixed(2)} MB)`;
+  checkSideloadReady();
+}
+
+targetDeviceSelect.onchange = checkSideloadReady;
+
+function checkSideloadReady() {
+  sideloadBtn.disabled = !(selectedFile && targetDeviceSelect.value);
+}
+
+// -------------------------------------------------------------
+// Execute Sideload Workflow
+// -------------------------------------------------------------
+sideloadBtn.onclick = async () => {
+  const apiKey = getApiKey();
+  if (!apiKey) { alert("Please enter and save your Admin API Key first"); return; }
+  if (!selectedFile || !targetDeviceSelect.value) return;
+
+  const deviceId = targetDeviceSelect.value;
+  const progressBox = document.getElementById("progressTracker");
+  progressBox.style.display = "flex";
+  sideloadBtn.disabled = true;
+
+  const step1Status = document.getElementById("step1Status");
+  const step2Status = document.getElementById("step2Status");
+  const step3Status = document.getElementById("step3Status");
+  const step4Status = document.getElementById("step4Status");
+
+  // Step 1: Upload IPA
+  step1Status.className = "step-status active";
+  step1Status.textContent = "⏳";
+  try {
+    const uploadRes = await fetch(`/api/v1/artifacts?filename=${encodeURIComponent(selectedFile.name)}`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/octet-stream"
+      },
+      body: selectedFile
+    });
+    if (!uploadRes.ok) throw new Error(`Upload failed: ${await uploadRes.text()}`);
+    const artifactData = await uploadRes.json();
+    step1Status.className = "step-status done";
+    step1Status.textContent = "✓";
+
+    // Step 2 & 3: Deploy (Approve & Queue Sign Job)
+    step2Status.className = "step-status active";
+    step2Status.textContent = "⏳";
+    const deployRes = await fetch("/api/v1/admin/deploy", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        artifact_id: artifactData.id,
+        device_id: deviceId,
+        auto_approve: true
+      })
+    });
+    if (!deployRes.ok) throw new Error(`Deploy failed: ${await deployRes.text()}`);
+    const deployData = await deployRes.json();
+    step2Status.className = "step-status done";
+    step2Status.textContent = "✓";
+
+    // Step 3: Track Sign Job
+    step3Status.className = "step-status active";
+    step3Status.textContent = "⏳";
+    const signJobId = deployData.sign_job_id;
+
+    // Poll job status until completed
+    const pollSignJob = setInterval(async () => {
+      try {
+        const jobsData = await (await fetch("/api/v1/dashboard/jobs", { headers: { "Authorization": `Bearer ${apiKey}` } })).json();
+        const rows = jobsData.rows.map(r => Object.fromEntries(jobsData.columns.map((c, i) => [c, Object.values(r)[i]])));
+        const job = rows.find(j => j.id === signJobId);
+        if (job) {
+          if (job.state === "completed") {
+            clearInterval(pollSignJob);
+            step3Status.className = "step-status done";
+            step3Status.textContent = "✓";
+
+            // Step 4: Device install
+            step4Status.className = "step-status done";
+            step4Status.textContent = "✓";
+            sideloadBtn.disabled = false;
+            fetchDashboard();
+          } else if (job.state === "failed" || job.state === "dead") {
+            clearInterval(pollSignJob);
+            step3Status.className = "step-status";
+            step3Status.textContent = "✗";
+            alert(`Signing job failed: ${job.error_details || job.error_category || "error"}`);
+            sideloadBtn.disabled = false;
+          }
+        }
+      } catch(e) {}
+    }, 2000);
+
+  } catch (err) {
+    alert("Sideload error: " + err.message);
+    sideloadBtn.disabled = false;
+  }
+};
+
+// -------------------------------------------------------------
+// Apple Account Dialog
+// -------------------------------------------------------------
+const accountModal = document.getElementById("accountModal");
+document.getElementById("openAccountModalBtn").onclick = () => accountModal.style.display = "flex";
+document.getElementById("closeAccountModalBtn").onclick = () => accountModal.style.display = "none";
+document.getElementById("cancelAccountBtn").onclick = () => accountModal.style.display = "none";
+
+document.getElementById("appleAccountForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const apiKey = getApiKey();
+  if (!apiKey) { alert("Please connect with your Admin API Key"); return; }
+  const appleId = document.getElementById("appleIdInput").value.trim();
+  const applePassword = document.getElementById("applePasswordInput").value.trim();
+  const twoFactorCode = document.getElementById("apple2FaInput").value.trim();
+
+  try {
+    const res = await fetch("/api/v1/admin/apple-accounts/credentials", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ apple_id: appleId, apple_password: applePassword, two_factor_code: twoFactorCode })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    alert("Apple credentials saved. Signing worker will authenticate on next signing request.");
+    accountModal.style.display = "none";
+    fetchDashboard();
+  } catch (err) {
+    alert("Failed to save credentials: " + err.message);
+  }
+};
+
+// -------------------------------------------------------------
+// Live Dashboard Polling
+// -------------------------------------------------------------
+async function fetchDashboard() {
+  const apiKey = getApiKey();
+  if (!apiKey) return;
+
+  const connBadge = document.getElementById("connBadge");
+  const connText = document.getElementById("connText");
+
+  try {
+    // 1. Devices
+    const devRes = await fetch("/api/v1/dashboard/devices", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    if (!devRes.ok) {
+      connBadge.style.display = "none";
+      return;
+    }
+    connBadge.style.display = "inline-flex";
+    connText.textContent = "Live " + new Date().toLocaleTimeString();
+
+    const devData = await devRes.json();
+    const devRows = devData.rows.map(r => Object.fromEntries(devData.columns.map((c, i) => [c, Object.values(r)[i]])));
+    liveDevices = devRows;
+    document.getElementById("deviceCountBadge").textContent = `${devRows.length} Devices`;
+
+    // Populate Target Device Select
+    const currentSelected = targetDeviceSelect.value;
+    targetDeviceSelect.innerHTML = '<option value="">Select Target Device...</option>' +
+      devRows.map(d => `<option value="${d.id}" ${d.id === currentSelected ? 'selected' : ''}>${d.device_name || 'Device'} (${d.model || d.platform}) [${d.platform}]</option>`).join("");
+
+    // Populate Devices Table
+    const devicesList = document.getElementById("devicesList");
+    if (devRows.length === 0) {
+      devicesList.innerHTML = `<tr><td colspan="7" class="text-muted" style="text-align:center;">No devices detected yet</td></tr>`;
+    } else {
+      devicesList.innerHTML = devRows.map(d => `
+        <tr>
+          <td><strong>${d.device_name || 'Unnamed Device'}</strong></td>
+          <td><span class="badge badge-neutral">${d.platform}</span></td>
+          <td>${d.model || '—'}</td>
+          <td>${d.os_version || '—'}</td>
+          <td class="mono" style="font-size:11px;">${d.udid}</td>
+          <td><span class="badge ${d.pairing_status === 'paired' ? 'badge-success' : 'badge-warning'}">${d.pairing_status}</span></td>
+          <td>
+            <button class="btn btn-sm" onclick="selectDeviceForSideload('${d.id}')">Select for Sideload</button>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    // 2. Apple Accounts
+    const accRes = await fetch("/api/v1/dashboard/accounts", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    if (accRes.ok) {
+      const accData = await accRes.json();
+      const accRows = accData.rows.map(r => Object.fromEntries(accData.columns.map((c, i) => [c, Object.values(r)[i]])));
+      if (accRows.length > 0) {
+        const acc = accRows[0];
+        document.getElementById("accEmail").textContent = acc.label || "—";
+        document.getElementById("accTeam").textContent = acc.team_identifier || "—";
+        updateBadge(document.getElementById("accStateBadge"), acc.auth_state || "authenticated");
+        document.getElementById("accDevices").textContent = `${acc.registered_device_count || 0} / 100`;
+        document.getElementById("accCerts").textContent = acc.cert_count || "0";
+      }
+    }
+
+    // 3. Jobs
+    const jobsRes = await fetch("/api/v1/dashboard/jobs", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    if (jobsRes.ok) {
+      const jobsData = await jobsRes.json();
+      const jobsRows = jobsData.rows.map(r => Object.fromEntries(jobsData.columns.map((c, i) => [c, Object.values(r)[i]])));
+      const activeCount = jobsRows.filter(j => j.state === "in_progress" || j.state === "pending" || j.state === "claimed").length;
+      document.getElementById("activeJobsBadge").textContent = `${activeCount} Active`;
+
+      const jobsList = document.getElementById("jobsList");
+      if (jobsRows.length === 0) {
+        jobsList.innerHTML = `<tr><td colspan="6" class="text-muted" style="text-align:center;">No jobs yet</td></tr>`;
+      } else {
+        jobsList.innerHTML = jobsRows.slice(0, 10).map(j => `
+          <tr>
+            <td class="mono" style="font-size:11px;">${String(j.id).slice(0, 18)}...</td>
+            <td><strong>${j.job_type}</strong></td>
+            <td><span class="badge ${j.state === 'completed' ? 'badge-success' : j.state === 'in_progress' || j.state === 'claimed' ? 'badge-warning' : 'badge-error'}">${j.state}</span></td>
+            <td>${j.attempt}</td>
+            <td>${fmtDate(j.created_at)}</td>
+            <td class="text-muted" style="max-width:260px; overflow:hidden; text-overflow:ellipsis;">${j.error_details || j.error_category || '—'}</td>
+          </tr>
+        `).join("");
+      }
+    }
+
+    // 4. Refresh Calendar
+    const refRes = await fetch("/api/v1/dashboard/refresh", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    if (refRes.ok) {
+      const refData = await refRes.json();
+      const refRows = refData.rows.map(r => Object.fromEntries(refData.columns.map((c, i) => [c, Object.values(r)[i]])));
+      const refreshList = document.getElementById("refreshList");
+      if (refRows.length === 0) {
+        refreshList.innerHTML = `<tr><td colspan="6" class="text-muted" style="text-align:center;">No active deployments</td></tr>`;
+      } else {
+        refreshList.innerHTML = refRows.map(r => `
+          <tr>
+            <td><strong>${r.device_name || 'Device'}</strong></td>
+            <td>${fmtDate(r.profile_expiry_at)}</td>
+            <td>${fmtDate(r.next_refresh_due_at)}</td>
+            <td><span class="badge ${r.last_refresh_result === 'completed' ? 'badge-success' : r.last_refresh_result === 'failed' ? 'badge-error' : 'badge-neutral'}">${r.last_refresh_result || '—'}</span></td>
+            <td>${fmtDate(r.last_refresh_at)}</td>
+            <td>
+              <span class="badge badge-neutral">${r.refresh_job_state || 'idle'}</span>
+            </td>
+          </tr>
+        `).join("");
+      }
+    }
+
+    // 5. Artifacts
+    const artRes = await fetch("/api/v1/dashboard/artifacts", { headers: { "Authorization": `Bearer ${apiKey}` } });
+    if (artRes.ok) {
+      const artData = await artRes.json();
+      const artRows = artData.rows.map(r => Object.fromEntries(artData.columns.map((c, i) => [c, Object.values(r)[i]])));
+      const artifactsList = document.getElementById("artifactsList");
+      if (artRows.length === 0) {
+        artifactsList.innerHTML = `<tr><td colspan="7" class="text-muted" style="text-align:center;">No artifacts uploaded</td></tr>`;
+      } else {
+        artifactsList.innerHTML = artRows.map(a => `
+          <tr>
+            <td><strong>${a.filename || 'app.ipa'}</strong></td>
+            <td class="mono" style="font-size:12px;">${a.bundle_identifier || '—'}</td>
+            <td>${a.version || '—'}</td>
+            <td><span class="badge badge-neutral">${a.platform || 'iPhoneOS'}</span></td>
+            <td><span class="badge ${a.quarantine_state === 'approved' ? 'badge-success' : 'badge-warning'}">${a.quarantine_state}</span></td>
+            <td class="mono" style="font-size:10px;">${String(a.sha256).slice(0, 16)}...</td>
+            <td>
+              ${a.quarantine_state !== 'approved' ? `<button class="btn btn-sm" onclick="approveArtifact('${a.id}')">Approve</button>` : `<span class="badge badge-success">Approved</span>`}
+            </td>
+          </tr>
+        `).join("");
+      }
+    }
+
+  } catch(e) {}
+}
+
+function selectDeviceForSideload(devId) {
+  targetDeviceSelect.value = devId;
+  checkSideloadReady();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function approveArtifact(artId) {
+  const apiKey = getApiKey();
+  if (!apiKey) return;
+  await fetch(`/api/v1/artifacts/${artId}`, {
+    method: "PATCH",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ state: "approved" })
+  });
+  fetchDashboard();
+}
+
+document.getElementById("saveKeyBtn").onclick = () => {
+  const key = document.getElementById("apiKey").value.trim();
+  localStorage.setItem("sidey_admin_key", key);
+  fetchDashboard();
+};
+
+const savedKey = localStorage.getItem("sidey_admin_key");
+if (savedKey) {
+  document.getElementById("apiKey").value = savedKey;
+}
+
+setInterval(fetchDashboard, 4000);
+fetchDashboard();
 </script>
 </body>
 </html>
