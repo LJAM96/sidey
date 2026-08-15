@@ -62,12 +62,14 @@ func (s *Server) handleUpdateAppleCredentials(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// 3. Upsert apple_accounts table
-	_, err := s.pool.Exec(r.Context(), `
-		INSERT INTO apple_accounts (label, team_identifier, auth_state, updated_at)
-		VALUES ($1, '', 'authenticating', now())
-		ON CONFLICT (label) DO UPDATE
-		SET updated_at = now()`, req.AppleID)
+	// 3. Upsert apple_accounts record by label
+	var existingID uuid.UUID
+	err := s.pool.QueryRow(r.Context(), `SELECT id FROM apple_accounts WHERE label = $1`, req.AppleID).Scan(&existingID)
+	if err == nil {
+		_, err = s.pool.Exec(r.Context(), `UPDATE apple_accounts SET auth_state = 'authenticating', updated_at = now() WHERE id = $1`, existingID)
+	} else {
+		_, err = s.pool.Exec(r.Context(), `INSERT INTO apple_accounts (label, auth_state, updated_at) VALUES ($1, 'authenticating', now())`, req.AppleID)
+	}
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "saving account record failed")
 		return
