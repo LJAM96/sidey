@@ -795,6 +795,7 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 			"device_type":  platform,
 			"machine_name": "isideload-minimal",
 			"apple_id":     appleID,
+			"source_url":   s.selfSourceURL(r),
 		}
 		var signJobID uuid.UUID
 		err = s.pool.QueryRow(r.Context(), `
@@ -816,6 +817,17 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 			"message":     fmt.Sprintf("Downloaded %s and queued for Apple signing & native install", req.Name),
 		})
 	}
+}
+
+// selfSourceURL resolves the Sidey self-hosted App Store source URL for the
+// requesting host, embedded into LiveContainer bundles during signing so the
+// device can discover the repository without manual setup.
+func (s *Server) selfSourceURL(r *http.Request) string {
+	proto := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		proto = "https"
+	}
+	return fmt.Sprintf("%s://%s/api/v1/store/source.json", proto, r.Host)
 }
 
 // handleStoreSourceJSON renders the AltStore / SideStore / LiveContainer compatible repository JSON.

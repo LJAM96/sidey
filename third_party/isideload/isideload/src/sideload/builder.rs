@@ -85,6 +85,7 @@ pub struct SideloaderBuilder {
     machine_name: Option<String>,
     delete_app_after_install: bool,
     device_type: Option<DeveloperDeviceType>,
+    source_url: Option<String>,
 }
 
 impl SideloaderBuilder {
@@ -99,6 +100,7 @@ impl SideloaderBuilder {
             max_certs_behavior: None,
             delete_app_after_install: true,
             device_type: None,
+            source_url: None,
             // extensions_behavior: None,
         }
     }
@@ -151,6 +153,13 @@ impl SideloaderBuilder {
         self
     }
 
+    /// Set the Sidey App Store source URL to pre-seed into LiveContainer
+    /// bundles during signing. When unset, no source is embedded.
+    pub fn source_url(mut self, source_url: impl Into<Option<String>>) -> Self {
+        self.source_url = source_url.into();
+        self
+    }
+
     // pub fn extensions_behavior(mut self, behavior: ExtensionsBehavior) -> Self {
     //     self.extensions_behavior = Some(behavior);
     //     self
@@ -170,6 +179,7 @@ impl SideloaderBuilder {
             //     .unwrap_or(ExtensionsBehavior::RegisterAll),
             self.delete_app_after_install,
             self.device_type,
+            self.source_url,
         )
     }
 }

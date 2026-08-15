@@ -16,6 +16,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -51,6 +52,7 @@ type config struct {
 	importDir     string
 	stateRuntime  string
 	signonlyBin   string
+	p12exportBin  string
 	anisetteURL   string
 	appleID       string
 	applePassword string
@@ -74,6 +76,7 @@ func main() {
 		importDir:     os.Getenv("SIDEY_IMPORT_STATE_DIR"),
 		stateRuntime:  envOr("SIDEY_STATE_RUNTIME_DIR", defaultStateRuntime),
 		signonlyBin:   envOr("SIDEY_SIGNONLY_BIN", "/usr/local/bin/signonly"),
+		p12exportBin:  envOr("SIDEY_P12EXPORT_BIN", "/usr/local/bin/p12export"),
 		anisetteURL:   envOr("SIDEY_ANISETTE_URL", defaultAnisetteURL),
 		appleID:       os.Getenv("SIDEY_APPLE_ID"),
 		applePassword: os.Getenv("SIDEY_APPLE_MAIN_PASSWORD"),
@@ -233,6 +236,14 @@ type signParams struct {
 	DeviceName  string `json:"device_name"`
 	DeviceType  string `json:"device_type"`
 	AppleID     string `json:"apple_id"`
+	// SourceURL is the Sidey self-hosted App Store source URL pre-seeded into
+	// LiveContainer bundles during signing.
+	SourceURL string `json:"source_url"`
+}
+
+type exportP12Params struct {
+	AppleID     string `json:"apple_id"`
+	MachineName string `json:"machine_name"`
 }
 
 func getCredentials(cfg config, requestedAppleID string) (appleID, applePassword string) {
@@ -270,7 +281,7 @@ func getCredentials(cfg config, requestedAppleID string) (appleID, applePassword
 
 func claimAndRun(cfg config, agentKey string) {
 	body, _ := json.Marshal(map[string]any{
-		"job_types": []string{"sign"},
+		"job_types": []string{"sign", "export_p12"},
 		"limit":     1,
 	})
 	req, err := http.NewRequest("POST", cfg.controlPlane+"/api/v1/jobs/claim", bytes.NewReader(body))
@@ -288,6 +299,7 @@ func claimAndRun(cfg config, agentKey string) {
 	var out struct {
 		Jobs []struct {
 			ID         string          `json:"id"`
+			JobType    string          `json:"job_type"`
 			DeviceID   *string         `json:"device_id"`
 			Parameters json.RawMessage `json:"parameters"`
 		} `json:"jobs"`
@@ -296,7 +308,19 @@ func claimAndRun(cfg config, agentKey string) {
 		return
 	}
 	for _, j := range out.Jobs {
-		runJob(cfg, agentKey, j.ID, j.DeviceID, j.Parameters)
+		dispatchJob(cfg, agentKey, j.ID, j.JobType, j.DeviceID, j.Parameters)
+	}
+}
+
+func dispatchJob(cfg config, agentKey, jobID, jobType string, deviceID *string, rawParams json.RawMessage) {
+	switch jobType {
+	case "sign":
+		runSignJob(cfg, agentKey, jobID, deviceID, rawParams)
+	case "export_p12":
+		runExportP12Job(cfg, agentKey, jobID, rawParams)
+	default:
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
+			"signing worker does not handle job type "+jobType, nil)
 	}
 }
 
@@ -330,7 +354,7 @@ func postJobStatus(cfg config, agentKey, jobID, state string, progress *int, cat
 	resp.Body.Close()
 }
 
-func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json.RawMessage) {
+func runSignJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json.RawMessage) {
 	progress := 5
 	postJobStatus(cfg, agentKey, jobID, "in_progress", &progress, "", "", nil)
 
@@ -413,7 +437,7 @@ func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json
 	}
 
 	signedIPA := filepath.Join(workDir, "signed.ipa")
-	signResult, signErr := runSignonly(signCfg, workDir, sourceIPA, signedIPA, machineName, params.DeviceUdid, params.DeviceName, params.DeviceType)
+	signResult, signErr := runSignonly(signCfg, workDir, sourceIPA, signedIPA, machineName, params.DeviceUdid, params.DeviceName, params.DeviceType, params.SourceURL)
 	if signErr != nil {
 		category := "other"
 		details := signErr.Error()
@@ -478,6 +502,152 @@ func runJob(cfg config, agentKey, jobID string, deviceID *string, rawParams json
 	log.Printf("job %s: signed %s (sha256 %s, cert %s)", jobID, params.ArtifactID, signResult.SignedIPASha256, signResult.CertSerial)
 }
 
+// ---------------------------------------------------------------------------
+// Apple-based certificate P12 export
+
+func runExportP12Job(cfg config, agentKey, jobID string, rawParams json.RawMessage) {
+	progress := 5
+	postJobStatus(cfg, agentKey, jobID, "in_progress", &progress, "", "", nil)
+
+	var params exportP12Params
+	if err := json.Unmarshal(rawParams, &params); err != nil {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
+			"export_p12 job parameters malformed: "+err.Error(), nil)
+		return
+	}
+
+	appleID, applePassword := getCredentials(cfg, params.AppleID)
+	if appleID == "" || applePassword == "" {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
+			"no Apple credentials configured for export_p12", nil)
+		return
+	}
+	machineName := params.MachineName
+	if machineName == "" {
+		machineName = defaultMachineName
+	}
+
+	workDir, err := os.MkdirTemp("", "p12-*")
+	if err != nil {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other", err.Error(), nil)
+		return
+	}
+	defer os.RemoveAll(workDir)
+	defer os.RemoveAll(cfg.stateRuntime)
+
+	if err := os.MkdirAll(cfg.stateRuntime, 0o700); err != nil {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other", err.Error(), nil)
+		return
+	}
+	if err := decryptState(cfg.agentStateDir, cfg.stateRuntime); err != nil {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "certificate",
+			"state decrypt failed: "+err.Error(), nil)
+		return
+	}
+	log.Printf("job %s: exporting p12 for %s (machine %s)", jobID, appleID, machineName)
+
+	p12Path := filepath.Join(workDir, "certificate.p12")
+	result, err := runP12export(cfg, appleID, applePassword, machineName, p12Path)
+	if err != nil {
+		category := "other"
+		details := err.Error()
+		if result != nil && result.Category != "" {
+			category = result.Category
+		}
+		if result != nil && result.Error != "" {
+			details = result.Error
+		}
+		if len(details) > maxErrorDetails {
+			details = details[:maxErrorDetails]
+		}
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, category, details, nil)
+		encryptState(cfg.stateRuntime, cfg.agentStateDir)
+		return
+	}
+
+	raw, err := os.ReadFile(p12Path)
+	if err != nil {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other", err.Error(), nil)
+		encryptState(cfg.stateRuntime, cfg.agentStateDir)
+		return
+	}
+
+	postJobStatus(cfg, agentKey, jobID, "completed", nil, "", "", map[string]any{
+		"p12_base64":   base64.StdEncoding.EncodeToString(raw),
+		"p12_sha256":   result.P12Sha256,
+		"cert_serial":  result.CertSerial,
+		"team_id":      result.TeamID,
+		"machine_name": result.MachineName,
+	})
+
+	if err := encryptState(cfg.stateRuntime, cfg.agentStateDir); err != nil {
+		log.Printf("state re-encrypt failed: %v", err)
+	}
+	log.Printf("job %s: exported p12 (sha256 %s, cert %s)", jobID, result.P12Sha256, result.CertSerial)
+}
+
+type p12exportResult struct {
+	Status      string `json:"status"`
+	Category    string `json:"category"`
+	Error       string `json:"error"`
+	P12Sha256   string `json:"p12_sha256"`
+	CertSerial  string `json:"cert_serial"`
+	TeamID      string `json:"team_id"`
+	MachineName string `json:"machine_name"`
+}
+
+func runP12export(cfg config, appleID, applePassword, machineName, outputP12 string) (*p12exportResult, error) {
+	cmd := exec.Command(cfg.p12exportBin, appleID, outputP12)
+	cmd.Env = append(os.Environ(),
+		"SIDEY_APPLE_MAIN_PASSWORD="+applePassword,
+		"SIDEY_ISIDELOAD_STATE="+cfg.stateRuntime,
+		"ANISETTE_URL="+cfg.anisetteURL,
+		"MACHINE_NAME="+machineName,
+		"SIGNONLY_2FA_CODE_FILE="+cfg.codeFile,
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		res := parseP12export(stdout.String())
+		if err != nil {
+			if res == nil {
+				res = &p12exportResult{Category: "other", Error: strings.TrimSpace(stderr.String())}
+			}
+			if res.Error == "" {
+				res.Error = err.Error()
+			}
+			return res, fmt.Errorf("p12export failed: %s", res.Error)
+		}
+		if res == nil {
+			return nil, errors.New("p12export produced no JSON result")
+		}
+		if res.Status != "ok" {
+			return res, fmt.Errorf("p12export error: %s", res.Error)
+		}
+		return res, nil
+	case <-time.After(jobTimeout):
+		cmd.Process.Kill()
+		return &p12exportResult{Category: "timeout"}, errors.New("p12export timed out")
+	}
+}
+
+func parseP12export(stdout string) *p12exportResult {
+	var res p12exportResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		return nil
+	}
+	return &res
+}
+
 func downloadArtifact(cfg config, agentKey, artifactID, dest string) error {
 	req, err := http.NewRequest("GET",
 		cfg.controlPlane+"/api/v1/agents/artifacts/"+artifactID+"/download", nil)
@@ -521,7 +691,7 @@ type signonlyResult struct {
 	AppIDCount             int    `json:"app_id_count"`
 }
 
-func runSignonly(cfg config, workDir, sourceIPA, signedIPA, machineName, deviceUDID, deviceName, deviceType string) (*signonlyResult, error) {
+func runSignonly(cfg config, workDir, sourceIPA, signedIPA, machineName, deviceUDID, deviceName, deviceType, sourceURL string) (*signonlyResult, error) {
 	if cfg.appleID == "" || cfg.applePassword == "" {
 		return nil, errors.New("Apple credentials not configured (SIDEY_APPLE_ID / SIDEY_APPLE_MAIN_PASSWORD)")
 	}
@@ -539,6 +709,9 @@ func runSignonly(cfg config, workDir, sourceIPA, signedIPA, machineName, deviceU
 		"DEVICE_TYPE="+deviceType,
 		"SIGNONLY_2FA_CODE_FILE="+cfg.codeFile,
 	)
+	if sourceURL != "" {
+		cmd.Env = append(cmd.Env, "SIDEY_SOURCE_URL="+sourceURL)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

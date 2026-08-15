@@ -241,6 +241,7 @@ impl Application {
         special: &Option<SpecialApp>,
         group_identifier: &str,
         cert: &CertificateIdentity,
+        sidey_source_url: Option<&str>,
     ) -> Result<(), Report> {
         let Some(special) = special.as_ref() else {
             return Ok(());
@@ -298,6 +299,27 @@ impl Application {
                     file.write_all(&p12_bytes)
                         .await
                         .context(format!("Failed to write {}", cert_file_name))?;
+                }
+
+                // Pre-seed Sidey's self-hosted source URL so LiveContainer can
+                // discover the signing host's app repository on first launch.
+                if matches!(special, SpecialApp::LiveContainer) {
+                    if let Some(source_url) = sidey_source_url {
+                        target_bundle.app_info.insert(
+                            "SideySourceURL".to_string(),
+                            plist::Value::String(source_url.to_string()),
+                        );
+                        let source_json = serde_json::json!({
+                            "source": "Sidey",
+                            "sourceURL": source_url,
+                        });
+                        tokio::fs::write(
+                            target_bundle.bundle_dir.join("SideySource.json"),
+                            source_json.to_string(),
+                        )
+                        .await
+                        .context("Failed to write SideySource.json")?;
+                    }
                 }
             }
         }

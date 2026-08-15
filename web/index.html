@@ -587,7 +587,8 @@
       <span>App Catalog & Store (AltStore & GitHub Sources)</span>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
         <button class="btn btn-sm" onclick="copySourceURL()" title="Copy AltStore/LiveContainer repository JSON URL">📋 Copy Store JSON</button>
-        <button class="btn btn-sm" onclick="addAltStoreSource()" title="Open AltStore / SideStore with this source">➕ Add to AltStore</button>
+        <button class="btn btn-sm" onclick="addAltStoreSource()" title="Open AltStore with this source">➕ Add to AltStore</button>
+        <button class="btn btn-sm" onclick="addSideStoreSource()" title="Open SideStore with this source">➕ Add to SideStore</button>
         <button class="btn btn-sm" onclick="fetchStoreApps(true)">↻ Refresh Store</button>
         <button class="btn btn-sm btn-primary" onclick="openAddSourceModal()">+ Add Source / GitHub</button>
       </div>
@@ -1097,6 +1098,47 @@ function addAltStoreSource() {
   window.location.href = `altstore://source?url=${sourceURL}`;
 }
 
+function addSideStoreSource() {
+  const sourceURL = encodeURIComponent(`${window.location.origin}/api/v1/store/source.json`);
+  window.location.href = `sidestore://source?url=${sourceURL}`;
+}
+
+async function downloadSigningCertificate(accountId, label) {
+  try {
+    const resp = await apiFetch(`/api/v1/admin/apple-accounts/${encodeURIComponent(accountId)}/certificate/download`, { method: "GET" });
+    if (!resp.ok) {
+      let msg = `Failed to export signing certificate (HTTP ${resp.status}).`;
+      try {
+        const err = await resp.json();
+        if (err && err.error) msg += `\n\n${err.error}`;
+      } catch (_) {}
+      alert(msg);
+      return;
+    }
+    const contentType = resp.headers.get("Content-Type") || "";
+    const disposition = resp.headers.get("Content-Disposition") || "";
+    let filename = `${(label || "certificate").replace(/[^a-zA-Z0-9-_]/g, "_")}.p12`;
+    const m = disposition.match(/filename="?([^";]+)"?/i);
+    if (m) filename = m[1];
+    if (contentType === "application/json") {
+      const err = await resp.json();
+      alert(err.error || "Failed to export signing certificate.");
+      return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (e) {
+    alert(`Failed to export signing certificate: ${e.message || e}`);
+  }
+}
+
 async function fetchStoreApps(forceRefresh = false) {
   const grid = document.getElementById("storeGrid");
   const countEl = document.getElementById("storeAppCount");
@@ -1525,8 +1567,9 @@ async function fetchDashboard() {
             <div class="account-card-item">
               <div class="account-card-top">
                 <span class="account-email">${a.label || '—'}</span>
-                <div style="display:flex; gap:8px; align-items:center;">
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                   <span class="badge ${badgeClass}">${usedSlots}/3 App Slots (${freeSlots} free)</span>
+                  <button class="btn btn-sm" onclick="downloadSigningCertificate('${a.id}', '${a.label}')" title="Download this account's signing certificate (.p12) for LiveContainer JIT-less mode">🔑 .p12</button>
                   <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}', '${a.label}')">&times;</button>
                 </div>
               </div>

@@ -49,7 +49,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Check + test isideload examples
         working-directory: third_party/isideload
-        run: cargo check -p signonly -p wireless
+        run: cargo check -p signonly -p wireless -p p12export
       - name: Check + test workspace crates
         run: |
           for crate in rust/*/; do

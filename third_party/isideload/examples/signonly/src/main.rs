@@ -285,6 +285,11 @@ async fn main() {
         );
     }
     let machine_name = env::var("MACHINE_NAME").unwrap_or_else(|_| "isideload-minimal".to_string());
+    // Optional Sidey self-hosted App Store source URL pre-seeded into
+    // LiveContainer bundles during signing.
+    let source_url = env::var("SIDEY_SOURCE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let device_type = match env::var("DEVICE_TYPE").as_deref() {
         Ok("tvos") => Some(isideload::dev::device_type::DeveloperDeviceType::Tvos),
         Ok("watchos") => Some(isideload::dev::device_type::DeveloperDeviceType::Watchos),
@@ -362,6 +367,7 @@ async fn main() {
         .storage(Box::new(FsStorage::new(storage_dir())))
         .machine_name(machine_name)
         .device_type(device_type.clone())
+        .source_url(source_url)
         .build();
 
     let signed_app = match sideloader.sign_app(input_ipa.clone(), Some(team.clone()), true).await {

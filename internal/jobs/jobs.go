@@ -59,6 +59,10 @@ const (
 	JobTypeSign      = "sign"
 	JobTypeUninstall = "uninstall"
 	JobTypeInventory = "inventory"
+	// JobTypeExportP12 requests the signing worker export the account's
+	// development certificate + private key as a PKCS#12 archive. It carries
+	// no device and is served back to the control plane in the job result.
+	JobTypeExportP12 = "export_p12"
 )
 
 // refreshProfileValidity is the assumed validity of a freshly issued free-team
@@ -243,10 +247,11 @@ func nullableJobTypes(types []string) any {
 }
 
 // globalTypes reports whether every requested job type is claimable by any
-// agent regardless of device ownership. Currently only sign jobs are global.
+// agent regardless of device ownership. Currently sign jobs and the
+// device-less certificate export job are global.
 func globalTypes(types []string) bool {
 	for _, t := range types {
-		if t != JobTypeSign {
+		if t != JobTypeSign && t != JobTypeExportP12 {
 			return false
 		}
 	}
@@ -279,6 +284,44 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 		_ = tx.QueryRow(ctx, `SELECT role FROM agents WHERE id = $1`, agentID).Scan(&role)
 		if role == "device_service" || role == "signing_worker" {
 			isGlobalAgent = true
+		}
+	}
+
+	claimed := make([]*Job, 0, limit)
+
+	// Device-less jobs (e.g. certificate p12 export) have no target device
+	// row to lock, so they bypass the per-device serialisation below. They are
+	// only claimable by a global agent (signing worker / device service) that
+	// explicitly requests the type.
+	if len(jobTypes) > 0 && len(deviceIDs) == 0 && (isGlobalAgent || globalTypes(jobTypes)) {
+		row := tx.QueryRow(ctx,
+			`SELECT `+jobColumns+`
+			 FROM jobs
+			 WHERE device_id IS NULL AND state = $1
+			   AND (retry_at IS NULL OR retry_at <= now())
+			   AND job_type = ANY($2)
+			 ORDER BY created_at, id
+			 LIMIT 1
+			 FOR UPDATE SKIP LOCKED`, StatePending, jobTypes)
+		job, err := scanJob(row)
+		if err == nil {
+			err = tx.QueryRow(ctx, `
+				UPDATE jobs
+				SET state = $1, claimed_by = $2, attempt = attempt + 1,
+				    started_at = COALESCE(started_at, now()),
+				    lease_expires_at = now() + $3::interval,
+				    retry_at = NULL, updated_at = now()
+				WHERE id = $4
+				RETURNING `+jobColumns,
+				StateClaimed, agentID, s.leaseSeconds()+" seconds", job.ID).Scan(
+				&job.ID, &job.JobType, &job.DeviceID, &job.ApplicationID, &job.State,
+				&job.Attempt, &job.Progress, &job.Parameters, &job.ClaimedBy,
+				&job.LeaseExpiresAt, &job.ErrorCategory, &job.ErrorDetails, &job.RetryAt,
+				&job.Result, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+				&job.UpdatedAt)
+			if err == nil {
+				claimed = append(claimed, job)
+			}
 		}
 	}
 
@@ -363,8 +406,6 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 			return nil, err
 		}
 	}
-
-	claimed := make([]*Job, 0, limit)
 	for _, deviceID := range devices {
 		if len(claimed) >= limit {
 			break

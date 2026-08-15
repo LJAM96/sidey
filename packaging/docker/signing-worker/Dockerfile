@@ -9,7 +9,7 @@ COPY third_party/isideload/Cargo.toml ./Cargo.toml
 COPY third_party/isideload/Cargo.lock ./Cargo.lock
 COPY third_party/isideload/isideload ./isideload
 COPY third_party/isideload/examples ./examples
-RUN cargo build --release -p signonly
+RUN cargo build --release -p signonly -p p12export
 
 # Stage 2: the signing worker service (Go).
 FROM golang:1.24-alpine AS worker-builder
@@ -27,6 +27,7 @@ RUN apk add --no-cache ca-certificates openssl \
     && mkdir -p /var/lib/sidey/signing-worker /run/sidey /run/sidey/signing-state \
     && chown -R 10001:10001 /var/lib/sidey/signing-worker /run/sidey
 COPY --from=signonly-builder /src/target/release/signonly /usr/local/bin/signonly
+COPY --from=signonly-builder /src/target/release/p12export /usr/local/bin/p12export
 COPY --from=worker-builder /out/signing-worker /usr/local/bin/signing-worker
 USER 10001:10001
 EXPOSE 8090

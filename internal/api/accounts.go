@@ -220,6 +220,7 @@ func (s *Server) handleAdminDeploy(w http.ResponseWriter, r *http.Request) {
 		"device_type":  platform,
 		"machine_name": "isideload-minimal",
 		"apple_id":     appleID,
+		"source_url":   s.selfSourceURL(r),
 	}
 	var signJobID uuid.UUID
 	err = s.pool.QueryRow(r.Context(), `
@@ -357,6 +358,7 @@ func (s *Server) handleInstallLiveContainer(w http.ResponseWriter, r *http.Reque
 		"machine_name": "isideload-minimal",
 		"apple_id":     appleID,
 		"is_container": true,
+		"source_url":   s.selfSourceURL(r),
 	}
 	var signJobID uuid.UUID
 	err = s.pool.QueryRow(r.Context(), `

@@ -1,5 +1,11 @@
 target/
 
+# Local Go build artifacts (named after the cmd/ package when built in-place).
+signing-worker
+control-plane
+device-service
+sideyctl
+
 # Deployment variables (may later hold TS_AUTHKEY).
 deploy/.env
 

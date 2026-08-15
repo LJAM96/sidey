@@ -85,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("POST /api/v1/admin/apple-accounts/credentials", s.admin(s.handleUpdateAppleCredentials))
 	mux.Handle("DELETE /api/v1/admin/apple-accounts/{id}", s.admin(s.handleDeleteAppleAccount))
+	mux.Handle("GET /api/v1/admin/apple-accounts/{id}/certificate/download", s.admin(s.handleAppleCertificateDownload))
 	mux.Handle("POST /api/v1/admin/deploy", s.admin(s.handleAdminDeploy))
 	mux.Handle("POST /api/v1/admin/livecontainer/install", s.admin(s.handleInstallLiveContainer))
 	mux.Handle("POST /api/v1/admin/livecontainer/push", s.admin(s.handleLiveContainerPush))

@@ -50,6 +50,9 @@ pub struct Sideloader {
     delete_app_after_install: bool,
     device_type: Option<DeveloperDeviceType>,
     team: Option<DeveloperTeam>,
+    /// Self-hosted Sidey App Store source URL pre-seeded into LiveContainer
+    /// bundles during signing (see SpecialApp::LiveContainer).
+    source_url: Option<String>,
 }
 
 impl Sideloader {
@@ -66,6 +69,7 @@ impl Sideloader {
         //extensions_behavior: ExtensionsBehavior,
         delete_app_after_install: bool,
         device_type: Option<DeveloperDeviceType>,
+        source_url: Option<String>,
     ) -> Self {
         Sideloader {
             team_selection,
@@ -78,6 +82,7 @@ impl Sideloader {
             delete_app_after_install,
             device_type,
             team: None,
+            source_url,
         }
     }
 
@@ -166,9 +171,14 @@ impl Sideloader {
 
         info!("App IDs configured");
 
-        app.apply_special_app_behavior(&special, &group_identifier, &cert_identity)
-            .await
-            .context("Failed to modify app bundle")?;
+        app.apply_special_app_behavior(
+            &special,
+            &group_identifier,
+            &cert_identity,
+            self.source_url.as_deref(),
+        )
+        .await
+        .context("Failed to modify app bundle")?;
 
         let provisioning_profile = self
             .dev_session
