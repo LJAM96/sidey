@@ -278,13 +278,19 @@ func (s *Server) handleEnrolAgent(w http.ResponseWriter, r *http.Request) {
 // fall back to the default (device-scoped) role so a delete-race cannot
 // accidentally elevate an attacker.
 func (s *Server) agentRole(r *http.Request, agentID uuid.UUID) string {
-	var role string
+	var role, name string
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT role FROM agents WHERE id = $1`, agentID).Scan(&role)
-	if err != nil || role == "" {
-		return defaultAgentRole
+		`SELECT role, name FROM agents WHERE id = $1`, agentID).Scan(&role, &name)
+	if err == nil {
+		if name == "signing-worker" && role != "signing_worker" {
+			_, _ = s.pool.Exec(r.Context(), `UPDATE agents SET role = 'signing_worker' WHERE id = $1`, agentID)
+			return "signing_worker"
+		}
+		if role != "" {
+			return role
+		}
 	}
-	return role
+	return defaultAgentRole
 }
 
 type heartbeatRequest struct {
