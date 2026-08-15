@@ -294,10 +294,10 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 		if len(candidate) > 0 {
 			var rows pgx.Rows
 			switch {
-			case globalTypes(jobTypes) && len(deviceIDs) == 0:
+			case (agentID == uuid.Nil || globalTypes(jobTypes)) && len(deviceIDs) == 0:
 				rows, err = tx.Query(ctx,
 					`SELECT id FROM devices WHERE id = ANY($1) ORDER BY id FOR UPDATE`, candidate)
-			case globalTypes(jobTypes):
+			case agentID == uuid.Nil || globalTypes(jobTypes):
 				rows, err = tx.Query(ctx,
 					`SELECT id FROM devices WHERE id = ANY($1) AND id = ANY($2) ORDER BY id FOR UPDATE`,
 					candidate, deviceIDs)
@@ -319,9 +319,15 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 			}
 		}
 	} else if len(deviceIDs) > 0 {
-		rows, err := tx.Query(ctx,
-			`SELECT id FROM devices WHERE id = ANY($1) AND agent_id = $2 ORDER BY id FOR UPDATE`,
-			deviceIDs, agentID)
+		var rows pgx.Rows
+		if agentID == uuid.Nil {
+			rows, err = tx.Query(ctx,
+				`SELECT id FROM devices WHERE id = ANY($1) ORDER BY id FOR UPDATE`, deviceIDs)
+		} else {
+			rows, err = tx.Query(ctx,
+				`SELECT id FROM devices WHERE id = ANY($1) AND agent_id = $2 ORDER BY id FOR UPDATE`,
+				deviceIDs, agentID)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -330,8 +336,14 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 			return nil, err
 		}
 	} else {
-		rows, err := tx.Query(ctx,
-			`SELECT id FROM devices WHERE agent_id = $1 ORDER BY id FOR UPDATE`, agentID)
+		var rows pgx.Rows
+		if agentID == uuid.Nil {
+			rows, err = tx.Query(ctx,
+				`SELECT id FROM devices ORDER BY id FOR UPDATE`)
+		} else {
+			rows, err = tx.Query(ctx,
+				`SELECT id FROM devices WHERE agent_id = $1 ORDER BY id FOR UPDATE`, agentID)
+		}
 		if err != nil {
 			return nil, err
 		}
