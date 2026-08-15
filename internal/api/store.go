@@ -717,11 +717,9 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 	// 4. Save artifact in database
 	var artifactID uuid.UUID
 	err = s.pool.QueryRow(r.Context(), `
-		INSERT INTO artifacts (sha256, filename, bundle_identifier, version, platform, quarantine_state, state_changed_at)
-		VALUES ($1, $2, $3, $4, $5, 'approved', now())
-		ON CONFLICT (sha256) DO UPDATE SET
-			quarantine_state = 'approved',
-			state_changed_at = now()
+		INSERT INTO artifacts (sha256, filename, bundle_identifier, version, platform, quarantine_state, source)
+		VALUES ($1, $2, $3, $4, $5, 'approved', 'store')
+		ON CONFLICT (sha256) DO UPDATE SET quarantine_state = 'approved'
 		RETURNING id`,
 		sha256Hex, filename, meta.BundleIdentifier, meta.Version, meta.Platform).Scan(&artifactID)
 	if err != nil {

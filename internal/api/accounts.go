@@ -181,7 +181,7 @@ func (s *Server) handleAdminDeploy(w http.ResponseWriter, r *http.Request) {
 	// 1. Auto-approve artifact
 	_, err := s.pool.Exec(r.Context(), `
 		UPDATE artifacts
-		SET quarantine_state = 'approved', state_changed_at = now()
+		SET quarantine_state = 'approved'
 		WHERE id = $1`, req.ArtifactID)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "approving artifact failed")
@@ -282,7 +282,7 @@ func (s *Server) handleInstallLiveContainer(w http.ResponseWriter, r *http.Reque
 		SELECT id, sha256 FROM artifacts
 		WHERE (bundle_identifier = 'com.kdt.livecontainer' OR filename ILIKE '%livecontainer%')
 		  AND quarantine_state = 'approved' AND sha256 NOT LIKE 'livecontainer-%'
-		ORDER BY created_at DESC LIMIT 1`).Scan(&artifactID, &sha256Hex)
+		ORDER BY imported_at DESC LIMIT 1`).Scan(&artifactID, &sha256Hex)
 
 	if err != nil {
 		// Download fresh LiveContainer.ipa from GitHub
@@ -324,9 +324,9 @@ func (s *Server) handleInstallLiveContainer(w http.ResponseWriter, r *http.Reque
 		}
 
 		err = s.pool.QueryRow(r.Context(), `
-			INSERT INTO artifacts (sha256, filename, bundle_identifier, version, platform, quarantine_state, state_changed_at)
-			VALUES ($1, 'LiveContainer.ipa', $2, $3, $4, 'approved', now())
-			ON CONFLICT (sha256) DO UPDATE SET quarantine_state = 'approved', state_changed_at = now()
+			INSERT INTO artifacts (sha256, filename, bundle_identifier, version, platform, quarantine_state, source)
+			VALUES ($1, 'LiveContainer.ipa', $2, $3, $4, 'approved', 'github')
+			ON CONFLICT (sha256) DO UPDATE SET quarantine_state = 'approved'
 			RETURNING id`,
 			shaHex, meta.BundleIdentifier, meta.Version, meta.Platform).Scan(&artifactID)
 		if err != nil {
@@ -414,7 +414,7 @@ func (s *Server) handleLiveContainerPush(w http.ResponseWriter, r *http.Request)
 	}
 
 	_, _ = s.pool.Exec(r.Context(), `
-		UPDATE artifacts SET quarantine_state = 'approved', state_changed_at = now()
+		UPDATE artifacts SET quarantine_state = 'approved'
 		WHERE id = $1`, req.ArtifactID)
 
 	params := map[string]any{
