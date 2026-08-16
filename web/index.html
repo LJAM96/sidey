@@ -589,6 +589,8 @@
         <button class="btn btn-sm" onclick="copySourceURL()" title="Copy AltStore/LiveContainer repository JSON URL">📋 Copy Store JSON</button>
         <button class="btn btn-sm" onclick="addAltStoreSource()" title="Open AltStore with this source">➕ Add to AltStore</button>
         <button class="btn btn-sm" onclick="addSideStoreSource()" title="Open SideStore with this source">➕ Add to SideStore</button>
+        <button class="btn btn-sm" onclick="addLiveContainerSource()" title="Open LiveContainer with this source">➕ Add to LiveContainer</button>
+        <button class="btn btn-sm" onclick="setPublicBaseURL()" title="Set the URL the phone uses to reach this store">🌐 Public URL</button>
         <button class="btn btn-sm" onclick="fetchStoreApps(true)">↻ Refresh Store</button>
         <button class="btn btn-sm btn-primary" onclick="openAddSourceModal()">+ Add Source / GitHub</button>
       </div>
@@ -1080,8 +1082,28 @@ sideloadBtn.onclick = async () => {
 // -------------------------------------------------------------
 // App Store & Catalog Fetching & Actions
 // -------------------------------------------------------------
+function getStoreBaseURL() {
+  const saved = localStorage.getItem("sideyPublicBaseURL");
+  if (saved && saved.trim()) return saved.trim().replace(/\/+$/, "");
+  return window.location.origin;
+}
+
+function setPublicBaseURL() {
+  const current = getStoreBaseURL();
+  const input = prompt(
+    "Public base URL (what the PHONE uses to reach this store, e.g. http://100.100.12.70:8080).\n\nLeave empty to use the current page origin:",
+    current
+  );
+  if (input === null) return;
+  const url = input.trim().replace(/\/+$/, "");
+  if (url) localStorage.setItem("sideyPublicBaseURL", url);
+  else localStorage.removeItem("sideyPublicBaseURL");
+  const sourceURL = `${getStoreBaseURL()}/api/v1/store/source.json`;
+  alert(`Store source URL now:\n\n${sourceURL}\n\nThis is the URL your phone will fetch.`);
+}
+
 function copySourceURL() {
-  const sourceURL = `${window.location.origin}/api/v1/store/source.json`;
+  const sourceURL = `${getStoreBaseURL()}/api/v1/store/source.json`;
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(sourceURL).then(() => {
       alert(`Sidey Store JSON URL copied to clipboard:\n\n${sourceURL}\n\nYou can add this URL to LiveContainer, SideStore, or AltStore as an App Source.`);
@@ -1094,13 +1116,18 @@ function copySourceURL() {
 }
 
 function addAltStoreSource() {
-  const sourceURL = encodeURIComponent(`${window.location.origin}/api/v1/store/source.json`);
+  const sourceURL = encodeURIComponent(`${getStoreBaseURL()}/api/v1/store/source.json`);
   window.location.href = `altstore://source?url=${sourceURL}`;
 }
 
 function addSideStoreSource() {
-  const sourceURL = encodeURIComponent(`${window.location.origin}/api/v1/store/source.json`);
+  const sourceURL = encodeURIComponent(`${getStoreBaseURL()}/api/v1/store/source.json`);
   window.location.href = `sidestore://source?url=${sourceURL}`;
+}
+
+function addLiveContainerSource() {
+  const sourceURL = encodeURIComponent(`${getStoreBaseURL()}/api/v1/store/source.json`);
+  window.location.href = `livecontainer://source?url=${sourceURL}`;
 }
 
 async function downloadSigningCertificate(accountId, label) {
