@@ -1218,20 +1218,6 @@ function renderStoreApps(apps) {
       </div>
     `;
 
-    return `
-      <div class="store-card" id="card-${a.id}">
-        <div>
-          <div class="store-card-header">
-            <img class="store-icon" src="${a.icon_url || 'data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23647082%22 stroke-width=%222%22><rect x=%223%22 y=%223%22 width=%2218%22 height=%2218%22 rx=%224%22/></svg>'}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23647082%22 stroke-width=%222%22><rect x=%223%22 y=%223%22 width=%2218%22 height=%2218%22 rx=%224%22/></svg>'">
-            <div class="store-info">
-              <div class="store-app-name" title="${a.name}">${a.name}</div>
-              <div class="store-app-dev">${a.developer || 'Developer'} • <span class="badge badge-neutral" style="font-size:9px; padding:1px 5px;">${a.source}</span></div>
-              ${versionSelectorHtml}
-            </div>
-          </div>
-          <div class="store-desc" style="margin-top:10px;">${a.description || 'No description provided.'}</div>
-        </div>
-
     const isLiveContainerApp = a.name.toLowerCase().includes('livecontainer') || a.id.toLowerCase().includes('livecontainer');
     const actionButtonsHtml = isLiveContainerApp ? `
       <div class="store-actions">
