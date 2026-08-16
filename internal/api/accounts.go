@@ -209,7 +209,7 @@ func (s *Server) handleAdminDeploy(w http.ResponseWriter, r *http.Request) {
 		err := s.pool.QueryRow(r.Context(), `
 			SELECT label FROM apple_accounts
 			WHERE auth_state IN ('authenticated', 'authenticating')
-			ORDER BY registered_app_id_count ASC, last_auth_at DESC
+			ORDER BY COALESCE(app_id_available_quantity, GREATEST(0, 3 - registered_app_id_count)) DESC, last_auth_at DESC
 			LIMIT 1`).Scan(&chosenLabel)
 		if err == nil && chosenLabel != "" {
 			appleID = chosenLabel
@@ -347,7 +347,7 @@ func (s *Server) handleInstallLiveContainer(w http.ResponseWriter, r *http.Reque
 		err := s.pool.QueryRow(r.Context(), `
 			SELECT label FROM apple_accounts
 			WHERE auth_state IN ('authenticated', 'authenticating')
-			ORDER BY registered_app_id_count ASC, last_auth_at DESC
+			ORDER BY COALESCE(app_id_available_quantity, GREATEST(0, 3 - registered_app_id_count)) DESC, last_auth_at DESC
 			LIMIT 1`).Scan(&chosenLabel)
 		if err == nil && chosenLabel != "" {
 			appleID = chosenLabel

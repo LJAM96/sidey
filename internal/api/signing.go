@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -208,6 +209,8 @@ type signedArtifactUploadRequest struct {
 	ProvisioningProfileRef string    `json:"provisioning_profile_ref"`
 	DeviceCount            int       `json:"device_count"`
 	AppIDCount             int       `json:"app_id_count"`
+	AppIDMaxQuantity       *int64    `json:"app_id_max_quantity"`
+	AppIDAvailableQuantity *int64    `json:"app_id_available_quantity"`
 }
 
 // handleUploadSignedArtifact stores the signed IPA produced by the signing
@@ -241,6 +244,14 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 	req.ProvisioningProfileRef = r.FormValue("provisioning_profile_ref")
 	fmt.Sscanf(r.FormValue("device_count"), "%d", &req.DeviceCount)
 	fmt.Sscanf(r.FormValue("app_id_count"), "%d", &req.AppIDCount)
+	if v := r.FormValue("app_id_max_quantity"); v != "" {
+		n, _ := strconv.ParseInt(v, 10, 64)
+		req.AppIDMaxQuantity = &n
+	}
+	if v := r.FormValue("app_id_available_quantity"); v != "" {
+		n, _ := strconv.ParseInt(v, 10, 64)
+		req.AppIDAvailableQuantity = &n
+	}
 
 	if req.SourceArtifactID == uuid.Nil || req.DeviceID == uuid.Nil || req.JobID == uuid.Nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "job_id, source_artifact_id and device_id are required"})
@@ -421,16 +432,20 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 	var accountID uuid.UUID
 	err = tx.QueryRow(r.Context(), `
 		INSERT INTO apple_accounts (label, team_identifier, auth_state, last_auth_at,
-			registered_device_count, registered_app_id_count)
-		VALUES ($1, $2, 'authenticated', now(), $3, $4)
+			registered_device_count, registered_app_id_count,
+			app_id_max_quantity, app_id_available_quantity)
+		VALUES ($1, $2, 'authenticated', now(), $3, $4, $5, $6)
 		ON CONFLICT (team_identifier) WHERE team_identifier IS NOT NULL
 		DO UPDATE SET
 			auth_state = 'authenticated',
 			last_auth_at = now(),
 			registered_device_count = $3,
-			registered_app_id_count = $4
+			registered_app_id_count = $4,
+			app_id_max_quantity = COALESCE($5, apple_accounts.app_id_max_quantity),
+			app_id_available_quantity = COALESCE($6, apple_accounts.app_id_available_quantity)
 		RETURNING id`,
-		req.AccountEmail, teamID, req.DeviceCount, req.AppIDCount).Scan(&accountID)
+		req.AccountEmail, teamID, req.DeviceCount, req.AppIDCount,
+		req.AppIDMaxQuantity, req.AppIDAvailableQuantity).Scan(&accountID)
 	if err != nil {
 		fail(http.StatusInternalServerError, "account upsert failed")
 		return
@@ -570,6 +585,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	s.queryTable(w, r, `
 		SELECT a.id, a.label, a.team_identifier, a.team_type, a.auth_state,
 		       a.last_auth_at, a.registered_app_id_count, a.registered_device_count,
+		       a.app_id_max_quantity, a.app_id_available_quantity,
 		       a.locked, a.failure_count,
 		       COUNT(c.id) AS cert_count
 		FROM apple_accounts a

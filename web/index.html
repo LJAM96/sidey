@@ -1076,6 +1076,19 @@ function checkSideloadReady() {
   sideloadBtn.disabled = !(selectedFile && targetDeviceSelect.value);
 }
 
+// Apple's developer portal reports how many App IDs may be registered per
+// team (max_quantity) and how many remain (available_quantity). Free teams
+// report 10/10 in the portal while only 3 can carry a profile at once; the
+// dashboard now shows the portal's own numbers instead of a hardcoded 3.
+function slotInfo(a) {
+  const used = a.registered_app_id_count || 0;
+  const max = a.app_id_max_quantity || 3;
+  const free = a.app_id_available_quantity != null
+    ? Math.max(0, a.app_id_available_quantity)
+    : Math.max(0, max - used);
+  return { used, max, free };
+}
+
 function updateSlotIndicators() {
   const selectedLabel = targetAccountSelect.value;
   const badge = document.getElementById("nativeSlotsBadge");
@@ -1088,10 +1101,9 @@ function updateSlotIndicators() {
   }
   const acc = liveAccounts.find(a => a.label === selectedLabel);
   if (acc) {
-    const used = acc.registered_app_id_count || 0;
-    const remaining = Math.max(0, 3 - used);
-    badge.textContent = `${remaining}/3 Slots Free`;
-    badge.className = "badge " + (remaining > 0 ? "badge-success" : "badge-error");
+    const { used, max, free } = slotInfo(acc);
+    badge.textContent = `${free}/${max} Slots Free`;
+    badge.className = "badge " + (free > 0 ? "badge-success" : "badge-error");
   }
 }
 
@@ -1765,9 +1777,9 @@ async function fetchDashboard() {
       const currentAccountChoice = targetAccountSelect.value || "auto";
       targetAccountSelect.innerHTML = '<option value="auto">Auto (Choose account with open slots)</option>' +
         accRows.map(a => {
-          const used = a.registered_app_id_count || 0;
-          const isFull = used >= 3;
-          return `<option value="${a.label}" ${a.label === currentAccountChoice ? 'selected' : ''} ${isFull ? 'style="color:var(--text-muted);"' : ''}>${a.label} — ${used}/3 slots used ${isFull ? '(FULL)' : `(${3-used} free)`}</option>`;
+          const { used, max, free } = slotInfo(a);
+          const isFull = free <= 0;
+          return `<option value="${a.label}" ${a.label === currentAccountChoice ? 'selected' : ''} ${isFull ? 'style="color:var(--text-muted);"' : ''}>${a.label} — ${used}/${max} App IDs ${isFull ? '(FULL)' : `(${free} free)`}</option>`;
         }).join("");
 
       updateSlotIndicators();
@@ -1777,18 +1789,17 @@ async function fetchDashboard() {
         accountsList.innerHTML = `<div class="text-muted" style="font-size:13px;">No Apple Accounts connected yet. Click "+ Add Account" to connect one.</div>`;
       } else {
         accountsList.innerHTML = accRows.map(a => {
-          const usedSlots = a.registered_app_id_count || 0;
-          const freeSlots = Math.max(0, 3 - usedSlots);
-          const slotPercent = Math.min(100, Math.round((usedSlots / 3) * 100));
-          const slotColor = usedSlots >= 3 ? "var(--error)" : usedSlots === 2 ? "var(--warning)" : "var(--success)";
-          const badgeClass = usedSlots >= 3 ? "badge-error" : usedSlots === 2 ? "badge-warning" : "badge-success";
+          const { used, max, free } = slotInfo(a);
+          const slotPercent = Math.min(100, Math.round((used / max) * 100));
+          const slotColor = free <= 0 ? "var(--error)" : free <= 2 ? "var(--warning)" : "var(--success)";
+          const badgeClass = free <= 0 ? "badge-error" : free <= 2 ? "badge-warning" : "badge-success";
 
           return `
             <div class="account-card-item">
               <div class="account-card-top">
                 <span class="account-email">${a.label || '—'}</span>
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                  <span class="badge ${badgeClass}">${usedSlots}/3 App Slots (${freeSlots} free)</span>
+                  <span class="badge ${badgeClass}" title="App IDs registered on Apple's developer portal. Free teams may register up to ${max} App IDs; the 3-app limit is only for simultaneously active provisioning profiles.">${used}/${max} App Slots (${free} free)</span>
                   <button class="btn btn-sm" onclick="downloadSigningCertificate('${a.id}', '${a.label}')" title="Download this account's signing certificate (.p12) for LiveContainer JIT-less mode">🔑 .p12</button>
                   <button class="btn btn-sm" onclick="pushP12ToPhone('${a.id}', '${a.label}')" title="Send this account's signing certificate (.p12) straight into LiveContainer on your iPhone (JIT-less mode)">📲 Send to phone</button>
                   <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}', '${a.label}')">&times;</button>

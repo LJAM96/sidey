@@ -394,11 +394,14 @@ async fn main() {
         .await
         .map(|d| d.len())
         .unwrap_or(0);
-    let app_id_count = dev_session
+    let app_ids = dev_session
         .list_app_ids(&team, device_type)
         .await
-        .map(|d| d.app_ids.len())
-        .unwrap_or(0);
+        .map(|d| (d.app_ids.len(), d.max_quantity, d.available_quantity))
+        .unwrap_or((0, None, None));
+    let app_id_count = app_ids.0;
+    let app_id_max_quantity = app_ids.1.and_then(|v| Some(v as i64));
+    let app_id_available_quantity = app_ids.2;
 
     let version = info_plist_value(&signed_app.bundle_dir, "CFBundleShortVersionString");
     let bundle_identifier = info_plist_value(&signed_app.bundle_dir, "CFBundleIdentifier");
@@ -415,5 +418,7 @@ async fn main() {
         "team_id": signed_app.team_id,
         "device_count": device_count,
         "app_id_count": app_id_count,
+        "app_id_max_quantity": app_id_max_quantity,
+        "app_id_available_quantity": app_id_available_quantity,
     }));
 }

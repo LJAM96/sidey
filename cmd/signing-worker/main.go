@@ -495,6 +495,8 @@ func runSignJob(cfg config, agentKey, jobID string, deviceID *string, rawParams 
 		"version":                  signResult.Version,
 		"device_count":             signResult.DeviceCount,
 		"app_id_count":             signResult.AppIDCount,
+		"app_id_max_quantity":      signResult.AppIDMaxQuantity,
+		"app_id_available_quantity": signResult.AppIDAvailableQuantity,
 	}
 	postJobStatus(cfg, agentKey, jobID, "completed", nil, "", "", result)
 	close(stopHeartbeat)
@@ -691,6 +693,8 @@ type signonlyResult struct {
 	TeamID                 string `json:"team_id"`
 	DeviceCount            int    `json:"device_count"`
 	AppIDCount             int    `json:"app_id_count"`
+	AppIDMaxQuantity       *int64 `json:"app_id_max_quantity"`
+	AppIDAvailableQuantity *int64 `json:"app_id_available_quantity"`
 }
 
 func runSignonly(cfg config, workDir, sourceIPA, signedIPA, machineName, deviceUDID, deviceName, deviceType, sourceURL string) (*signonlyResult, error) {
@@ -967,6 +971,12 @@ func uploadSignedIPA(cfg config, agentKey, jobID string, params signParams, devi
 		"signed_ipa_sha256":        res.SignedIPASha256,
 		"device_count":             fmt.Sprintf("%d", res.DeviceCount),
 		"app_id_count":             fmt.Sprintf("%d", res.AppIDCount),
+	}
+	if res.AppIDMaxQuantity != nil {
+		fields["app_id_max_quantity"] = fmt.Sprintf("%d", *res.AppIDMaxQuantity)
+	}
+	if res.AppIDAvailableQuantity != nil {
+		fields["app_id_available_quantity"] = fmt.Sprintf("%d", *res.AppIDAvailableQuantity)
 	}
 	for k, v := range fields {
 		if v == "" {
