@@ -25,6 +25,7 @@ CLI: run without arguments as the daemon; `sidey-device.py <verb> [args]`
 executes one verb and exits (health, inventory, install, refresh, verify,
 uninstall, tunnel).
 """
+import base64
 import http.client
 import json
 import os
@@ -76,6 +77,9 @@ TVOS_UNINSTALL_WRAPPER = os.environ.get(
     "SIDEY_TVOS_UNINSTALL_WRAPPER", str(REPO_DIR / "scripts/tvos-uninstall.sh"))
 TUNNEL_SCRIPT = os.environ.get(
     "SIDEY_WIRELESS_TUNNEL", str(REPO_DIR / "scripts/wireless-tunnel.py"))
+LIVECONTAINER_PUSH = os.environ.get(
+    "SIDEY_LIVECONTAINER_PUSH", str(REPO_DIR / "scripts/livecontainer-push.py"))
+RSD_ENDPOINT_FILE = os.environ.get("SIDEY_RSD_ENDPOINT_FILE", "/run/sidey/rsd-endpoint")
 
 
 def log(msg):
@@ -443,9 +447,13 @@ def run_intent(cp, job, cache_dir):
         cp.update(job_id, "completed", progress=100, result={"inventory": True})
         return
 
-    if job_type not in ("install", "verify", "refresh", "uninstall"):
+    if job_type not in ("install", "verify", "refresh", "uninstall", "livecontainer_push"):
         cp.update(job_id, "failed", error_category="unsupported_job_type",
                   error_details=f"device service cannot execute {job_type} jobs")
+        return
+
+    if job_type == "livecontainer_push":
+        _run_livecontainer_push(cp, job, cache_dir)
         return
 
     # uninstall is tvOS-only today (tvos-uninstall.sh); iOS has no
@@ -479,6 +487,73 @@ def run_intent(cp, job, cache_dir):
                   error_details=str(exc))
         return
     _report(cp, job_id, rc, captured, duration, timed_out)
+
+
+def _run_livecontainer_push(cp, job, cache_dir):
+    """livecontainer_push: HouseArrest-push a raw guest IPA or certificate p12
+    into LiveContainer's container over the wireless RSD tunnel."""
+    job_id = job["id"]
+    params = job.get("parameters") or {}
+    if isinstance(params, str):
+        params = json.loads(params)
+    kind = params.get("kind") or "ipa"
+    bundle = params.get("bundle_id", "") or "com.kdt.livecontainer"
+
+    log(f"job {job_id}: livecontainer_push kind={kind} bundle={bundle}")
+    cp.update(job_id, "in_progress", progress=0)
+
+    try:
+        # The RSD tunnel must be up before the push script connects; wait for
+        # a live listener like the install wrapper does.
+        if not _wait_for_rsd_endpoint(120):
+            raise RuntimeError("RSD tunnel is not up (check sidey-wireless-tunnel.service)")
+
+        if kind == "p12":
+            p12_b64 = params.get("p12_base64", "")
+            if not p12_b64:
+                raise RuntimeError("p12 push job missing p12_base64 parameter")
+            filename = params.get("filename", "certificate.p12")
+            local = cache_dir / filename
+            local.write_bytes(base64.b64decode(p12_b64))
+        else:
+            local = Path(_resolve_ipa(cp, job, cache_dir) or "")
+            if not local.is_file():
+                raise RuntimeError("livecontainer_push job missing artifact_id or ipa_path")
+
+        cmd = [VENV_PY, LIVECONTAINER_PUSH, "--endpoint-file", RSD_ENDPOINT_FILE,
+               "--file", str(local), "--bundle", bundle]
+        env = dict(os.environ)
+        env["PYTHONUNBUFFERED"] = "1"
+        rc, captured, duration, timed_out = _run_wrapper(cp, job_id, cmd, env)
+        if rc == 0:
+            log(f"job {job_id}: p12/ipa transferred to LiveContainer in {duration}s")
+            cp.update(job_id, "completed", progress=100,
+                      result={"pushed": True, "kind": kind, "duration_seconds": duration})
+        else:
+            tail = "\n".join(captured[-25:])[-2000:]
+            log(f"job {job_id}: livecontainer_push FAILED (rc={rc})")
+            cp.update(job_id, "failed",
+                      error_category="install_timeout" if timed_out else "install_failed",
+                      error_details=tail or f"push script exited {rc}")
+    except Exception as exc:
+        log(f"job {job_id}: livecontainer_push execution failed: {exc}")
+        cp.update(job_id, "failed", error_category="install_failed", error_details=str(exc))
+
+
+def _wait_for_rsd_endpoint(timeout):
+    import socket as _socket
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if os.path.isfile(RSD_ENDPOINT_FILE):
+                with open(RSD_ENDPOINT_FILE) as f:
+                    host, port = f.read().strip().split()[:2]
+                with _socket.create_connection((host, int(port)), 2):
+                    return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
 
 
 def _run_wrapper(cp, job_id, cmd, env):

@@ -578,6 +578,7 @@ func runExportP12Job(cfg config, agentKey, jobID string, rawParams json.RawMessa
 		"cert_serial":  result.CertSerial,
 		"team_id":      result.TeamID,
 		"machine_name": result.MachineName,
+		"machine_id":   result.MachineID,
 	})
 
 	if err := encryptState(cfg.stateRuntime, cfg.agentStateDir); err != nil {
@@ -594,6 +595,7 @@ type p12exportResult struct {
 	CertSerial  string `json:"cert_serial"`
 	TeamID      string `json:"team_id"`
 	MachineName string `json:"machine_name"`
+	MachineID   string `json:"machine_id"`
 }
 
 func runP12export(cfg config, appleID, applePassword, machineName, outputP12 string) (*p12exportResult, error) {

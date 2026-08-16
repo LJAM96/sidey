@@ -89,6 +89,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/deploy", s.admin(s.handleAdminDeploy))
 	mux.Handle("POST /api/v1/admin/livecontainer/install", s.admin(s.handleInstallLiveContainer))
 	mux.Handle("POST /api/v1/admin/livecontainer/push", s.admin(s.handleLiveContainerPush))
+	mux.Handle("POST /api/v1/admin/livecontainer/push-p12", s.admin(s.handleLiveContainerP12Push))
 	mux.Handle("POST /api/v1/admin/devices", s.admin(s.handleAdminCreateDevice))
 	mux.Handle("DELETE /api/v1/admin/devices/{id}", s.admin(s.handleAdminDeleteDevice))
 

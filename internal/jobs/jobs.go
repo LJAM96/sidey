@@ -63,6 +63,11 @@ const (
 	// development certificate + private key as a PKCS#12 archive. It carries
 	// no device and is served back to the control plane in the job result.
 	JobTypeExportP12 = "export_p12"
+	// JobTypeLiveContainerPush requests the device service push a guest IPA
+	// (or certificate p12) file directly into the LiveContainer app container
+	// on a device, typically over the wireless RSD tunnel. It is a device-
+	// scoped job executed by the install-side agent.
+	JobTypeLiveContainerPush = "livecontainer_push"
 )
 
 // refreshProfileValidity is the assumed validity of a freshly issued free-team

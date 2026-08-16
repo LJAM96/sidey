@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-livecontainer-push.py: Push a raw guest IPA directly into LiveContainer's container
-on an iOS device using pymobiledevice3 HouseArrestService over USB or wireless RSD tunnel.
+livecontainer-push.py: Push a raw guest IPA (or certificate p12) directly into
+LiveContainer's container on an iOS device using pymobiledevice3
+HouseArrestService over USB or the wireless RSD tunnel.
 
 Usage:
-  python3 livecontainer-push.py --udid <UDID> --ipa /path/to/app.ipa [--bundle com.kdt.livecontainer]
+  python3 livecontainer-push.py --udid <UDID> --file /path/to/app.ipa [--bundle com.kdt.livecontainer]
+  python3 livecontainer-push.py --endpoint-file /run/sidey/rsd-endpoint --file /path/to/cert.p12
+
+Requires pymobiledevice3 >= 10.3 (RSD HouseArrest shim support).
 """
 
 import argparse
@@ -15,25 +19,44 @@ import sys
 BUNDLE_DEFAULT = "com.kdt.livecontainer"
 
 
-async def push_ipa(udid: str, ipa_path: str, bundle: str):
-    if not os.path.isfile(ipa_path):
-        sys.exit(f"error: source ipa file '{ipa_path}' does not exist")
+async def _rsd_provider(endpoint_file: str):
+    from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 
-    filename = os.path.basename(ipa_path)
-    file_size = os.path.getsize(ipa_path)
+    with open(endpoint_file) as f:
+        host, port = f.read().strip().split()[:2]
+    rsd = RemoteServiceDiscoveryService((host, int(port)))
+    await rsd.connect()
+    return rsd
+
+
+async def _usbmux_provider(udid: str):
+    from pymobiledevice3.lockdown import create_using_usbmux
+
+    return await create_using_usbmux(udid)
+
+
+async def push_file(endpoint_file, udid, file_path: str, bundle: str):
+    if not os.path.isfile(file_path):
+        sys.exit(f"error: source file '{file_path}' does not exist")
+
+    filename = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
 
     try:
-        from pymobiledevice3.lockdown import create_using_usbmux
         from pymobiledevice3.services.house_arrest import HouseArrestService
     except ImportError:
         sys.exit("error: pymobiledevice3 is required (install via pip)")
 
-    print(f"Connecting to device {udid}...")
-    lockdown = await create_using_usbmux(udid)
+    if endpoint_file:
+        print(f"Connecting to device via RSD tunnel {endpoint_file}...")
+        provider = await _rsd_provider(endpoint_file)
+    else:
+        print(f"Connecting to device {udid} via USB...")
+        provider = await _usbmux_provider(udid)
+
     print(f"Opening HouseArrest for bundle '{bundle}'...")
-    
-    async with await HouseArrestService.create(lockdown, bundle, documents_only=False) as ha:
-        # Check / create Documents directory
+
+    async with await HouseArrestService.create(provider, bundle, documents_only=False) as ha:
         try:
             listing = await ha.listdir("/Documents")
         except Exception:
@@ -45,7 +68,7 @@ async def push_ipa(udid: str, ipa_path: str, bundle: str):
 
         chunk_size = 64 * 1024
         handle = await ha.fopen(remote_path, "wb")
-        with open(ipa_path, "rb") as f:
+        with open(file_path, "rb") as f:
             while True:
                 chunk = f.read(chunk_size)
                 if not chunk:
@@ -53,17 +76,21 @@ async def push_ipa(udid: str, ipa_path: str, bundle: str):
                 await ha.fwrite(handle, chunk)
         await ha.fclose(handle)
 
-        print(f"Successfully transferred {filename} to LiveContainer on device {udid}!")
+        print(f"Successfully transferred {filename} to LiveContainer on device!")
 
 
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--udid", required=True, help="Target device UDID")
-    parser.add_argument("--ipa", required=True, help="Path to guest IPA file")
+    parser.add_argument("--udid", help="Target device UDID (USB mode)")
+    parser.add_argument("--file", required=True, help="Path to guest IPA or certificate p12 file")
     parser.add_argument("--bundle", default=BUNDLE_DEFAULT, help="LiveContainer bundle ID")
+    parser.add_argument("--endpoint-file", help="RSD endpoint file (HOST PORT) for wireless mode")
     args = parser.parse_args()
 
-    await push_ipa(args.udid, args.ipa, args.bundle)
+    if not args.endpoint_file and not args.udid:
+        sys.exit("error: either --udid (USB) or --endpoint-file (wireless RSD) is required")
+
+    await push_file(args.endpoint_file, args.udid, args.file, args.bundle)
 
 
 if __name__ == "__main__":

@@ -253,5 +253,6 @@ async fn main() {
         "cert_serial": cert_identity.get_serial_number(),
         "team_id": team.team_id,
         "machine_name": cert_identity.machine_name,
+        "machine_id": cert_identity.machine_id,
     }));
 }

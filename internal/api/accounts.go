@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"sidey/internal/artifacts"
 	"sidey/internal/audit"
 )
@@ -450,5 +454,96 @@ func (s *Server) handleLiveContainerPush(w http.ResponseWriter, r *http.Request)
 		"device_id":   req.DeviceID.String(),
 		"job_id":      jobID.String(),
 		"message":     "Guest IPA queued for wireless LiveContainer HouseArrest transfer",
+	})
+}
+
+type liveContainerP12PushRequest struct {
+	AppleAccountID uuid.UUID `json:"apple_account_id"`
+	DeviceID       uuid.UUID `json:"device_id"`
+	BundleID       string    `json:"bundle_id"`
+}
+
+// handleLiveContainerP12Push pushes the account's signing certificate p12 into
+// LiveContainer's Documents on the device, so the certificate can be imported
+// on the phone (LiveContainer Settings → Certificates) without a USB tether.
+// The p12 password is the certificate machine_id, returned in the response.
+func (s *Server) handleLiveContainerP12Push(w http.ResponseWriter, r *http.Request) {
+	var req liveContainerP12PushRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.AppleAccountID == uuid.Nil || req.DeviceID == uuid.Nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "apple_account_id and device_id are required"})
+		return
+	}
+	bundleID := strings.TrimSpace(req.BundleID)
+	if bundleID == "" {
+		bundleID = "com.kdt.livecontainer"
+	}
+
+	var label string
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT label FROM apple_accounts WHERE id = $1`, req.AppleAccountID).Scan(&label)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "apple account not found"})
+		return
+	}
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "loading account failed")
+		return
+	}
+
+	var udid, deviceName, platform string
+	err = s.pool.QueryRow(r.Context(), `
+		SELECT udid, COALESCE(device_name, ''), platform
+		FROM devices WHERE id = $1`, req.DeviceID).Scan(&udid, &deviceName, &platform)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "device not found"})
+		return
+	}
+
+	waitCtx, cancel := context.WithTimeout(r.Context(), exportP12Timeout)
+	defer cancel()
+	p12, serial, machineID, err := s.awaitExportP12(waitCtx, label)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	filename := fmt.Sprintf("ALTCertificate-%s.p12", serial)
+
+	params := map[string]any{
+		"kind":        "p12",
+		"filename":    filename,
+		"p12_base64":  base64.StdEncoding.EncodeToString(p12),
+		"udid":        udid,
+		"device_name": deviceName,
+		"device_type": platform,
+		"target":      "livecontainer",
+		"bundle_id":   bundleID,
+	}
+	var jobID uuid.UUID
+	err = s.pool.QueryRow(r.Context(), `
+		INSERT INTO jobs (job_type, device_id, parameters, max_attempts, idempotency_key)
+		VALUES ('livecontainer_push', $1, $2, 3, $3)
+		RETURNING id`, req.DeviceID, params, uuid.New().String()).Scan(&jobID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "enqueuing LiveContainer p12 push job failed")
+		return
+	}
+
+	s.audit.Record(r.Context(), "admin", "livecontainer.p12_push_queued", audit.WithData(map[string]any{
+		"apple_account_id": req.AppleAccountID,
+		"device_id":        req.DeviceID,
+		"job_id":           jobID,
+	}))
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"status":     "ok",
+		"job_id":     jobID.String(),
+		"filename":   filename,
+		"password":   machineID,
+		"serial":     serial,
+		"message":    "Certificate p12 queued for wireless transfer to LiveContainer",
 	})
 }

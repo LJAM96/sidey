@@ -25,6 +25,7 @@ type exportP12Result struct {
 	CertSerial  string `json:"cert_serial"`
 	TeamID      string `json:"team_id"`
 	MachineName string `json:"machine_name"`
+	MachineID   string `json:"machine_id"`
 }
 
 // handleAppleCertificateDownload enqueues (or reuses) a certificate p12
@@ -53,7 +54,7 @@ func (s *Server) handleAppleCertificateDownload(w http.ResponseWriter, r *http.R
 	waitCtx, cancel := context.WithTimeout(r.Context(), exportP12Timeout)
 	defer cancel()
 
-	p12, serial, err := s.awaitExportP12(waitCtx, label)
+	p12, serial, machineID, err := s.awaitExportP12(waitCtx, label)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			writeJSON(w, http.StatusAccepted, map[string]any{
@@ -66,6 +67,9 @@ func (s *Server) handleAppleCertificateDownload(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	if machineID != "" {
+		w.Header().Set("X-P12-Password", machineID)
+	}
 	s.audit.Record(r.Context(), "admin", "certificate.exported",
 		audit.WithData(map[string]any{"account_id": id, "cert_serial": serial}))
 
@@ -78,9 +82,10 @@ func (s *Server) handleAppleCertificateDownload(w http.ResponseWriter, r *http.R
 
 // awaitExportP12 ensures a single export_p12 job exists for the account
 // (idempotent via idempotency_key) and polls it to completion, returning the
-// decoded PKCS#12 archive and certificate serial. A failed/dead job is purged
-// and recreated once so a transient failure can be retried by the caller.
-func (s *Server) awaitExportP12(ctx context.Context, appleID string) ([]byte, string, error) {
+// decoded PKCS#12 archive, certificate serial, and the p12 password (the
+// certificate's machine_id). A failed/dead job is purged and recreated once so
+// a transient failure can be retried by the caller.
+func (s *Server) awaitExportP12(ctx context.Context, appleID string) ([]byte, string, string, error) {
 	key := "export_p12:" + appleID
 	params := json.RawMessage(
 		fmt.Sprintf(`{"apple_id":%q,"machine_name":"isideload-minimal"}`, appleID))
@@ -102,7 +107,7 @@ func (s *Server) awaitExportP12(ctx context.Context, appleID string) ([]byte, st
 
 	snap, err := create()
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	retried := false
 	for {
@@ -111,7 +116,7 @@ func (s *Server) awaitExportP12(ctx context.Context, appleID string) ([]byte, st
 			if err := json.Unmarshal(snap.Result, &res); err == nil && res.P12Base64 != "" {
 				p12, derr := base64.StdEncoding.DecodeString(res.P12Base64)
 				if derr == nil {
-					return p12, res.CertSerial, nil
+					return p12, res.CertSerial, res.MachineID, nil
 				}
 			}
 		}
@@ -122,14 +127,14 @@ func (s *Server) awaitExportP12(ctx context.Context, appleID string) ([]byte, st
 				if detail == "" {
 					detail = snap.ErrCat
 				}
-				return nil, "", fmt.Errorf("certificate export failed: %s", detail)
+				return nil, "", "", fmt.Errorf("certificate export failed: %s", detail)
 			}
 			// Purge the poisoned idempotency key and recreate once.
 			_, _ = s.pool.Exec(ctx, `DELETE FROM jobs WHERE idempotency_key = $1`, key)
 			retried = true
 			snap, err = create()
 			if err != nil {
-				return nil, "", err
+				return nil, "", "", err
 			}
 			continue
 		case jobs.StatePending, jobs.StateClaimed, jobs.StateInProgress:
@@ -137,18 +142,18 @@ func (s *Server) awaitExportP12(ctx context.Context, appleID string) ([]byte, st
 		default:
 			select {
 			case <-ctx.Done():
-				return nil, "", ctx.Err()
+				return nil, "", "", ctx.Err()
 			default:
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return nil, "", ctx.Err()
+			return nil, "", "", ctx.Err()
 		case <-time.After(2 * time.Second):
 		}
 		snap, err = s.exportJobSnapshot(ctx, snap.ID)
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 	}
 }

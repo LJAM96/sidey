@@ -88,6 +88,7 @@ func allowedJobTypesForRole(role string) []string {
 			jobs.JobTypeRefresh,
 			jobs.JobTypeUninstall,
 			jobs.JobTypeInventory,
+			jobs.JobTypeLiveContainerPush,
 		}
 	default: // device_agent, tvos_agent
 		return []string{
