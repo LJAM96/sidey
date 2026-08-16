@@ -541,19 +541,53 @@ def _run_livecontainer_push(cp, job, cache_dir):
 
 
 def _wait_for_rsd_endpoint(timeout):
+    """Wait for a live RSD listener at RSD_ENDPOINT_FILE, restarting the
+    wireless tunnel if the endpoint is stale (the systemd unit can report
+    active even after the RemotePairing session drops, so probe the socket
+    before trusting it). Returns True once the endpoint answers."""
     import socket as _socket
     deadline = time.time() + timeout
+    restarted = False
     while time.time() < deadline:
         try:
             if os.path.isfile(RSD_ENDPOINT_FILE):
                 with open(RSD_ENDPOINT_FILE) as f:
                     host, port = f.read().strip().split()[:2]
-                with _socket.create_connection((host, int(port)), 2):
+                with _socket.create_connection((host, int(port)), 3):
                     return True
         except Exception:
             pass
-        time.sleep(2)
+        if not restarted:
+            _restart_wireless_tunnel()
+            restarted = True
+        time.sleep(5)
     return False
+
+
+def _restart_wireless_tunnel():
+    """Restart the wireless tunnel unit (or the fallback script) so a stale
+    RemotePairing session is re-established before a transfer job runs."""
+    log("RSD endpoint unreachable; restarting wireless tunnel...")
+    unit = "sidey-wireless-tunnel.service"
+    try:
+        rc = subprocess.run(["systemctl", "is-active", "--quiet", unit]).returncode
+        subprocess.run(["systemctl", "restart", unit], check=True,
+                       capture_output=True, timeout=30)
+        if rc == 0 or subprocess.run(["systemctl", "is-active", "--quiet", unit]).returncode == 0:
+            log("wireless tunnel unit restarted")
+            return
+    except Exception as exc:
+        log(f"systemctl restart failed ({exc}); falling back to script launch")
+    try:
+        setsid = subprocess.Popen(
+            ["setsid", "nohup", "sudo", VENV_PY, TUNNEL_SCRIPT,
+             "--udid", DEVICE_UDID or "", "--address", DEVICE_IP or "",
+             "--port", "49152", "--endpoint-file", RSD_ENDPOINT_FILE],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        log(f"wireless tunnel script launched (pid {setsid.pid})")
+    except Exception as exc:
+        log(f"failed to launch wireless tunnel script: {exc}")
 
 
 def _run_wrapper(cp, job_id, cmd, env):
