@@ -68,6 +68,10 @@ const (
 	// on a device, typically over the wireless RSD tunnel. It is a device-
 	// scoped job executed by the install-side agent.
 	JobTypeLiveContainerPush = "livecontainer_push"
+	// JobTypeInstalledApps requests the device service inventory the device:
+	// system apps via the installation proxy, plus the guest apps inside the
+	// LiveContainer container. The inventory is reported in the job result.
+	JobTypeInstalledApps = "installed_apps"
 )
 
 // refreshProfileValidity is the assumed validity of a freshly issued free-team

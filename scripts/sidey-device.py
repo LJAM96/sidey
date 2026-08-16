@@ -79,6 +79,8 @@ TUNNEL_SCRIPT = os.environ.get(
     "SIDEY_WIRELESS_TUNNEL", str(REPO_DIR / "scripts/wireless-tunnel.py"))
 LIVECONTAINER_PUSH = os.environ.get(
     "SIDEY_LIVECONTAINER_PUSH", str(REPO_DIR / "scripts/livecontainer-push.py"))
+INSTALLED_APPS_SCRIPT = os.environ.get(
+    "SIDEY_INSTALLED_APPS_SCRIPT", str(REPO_DIR / "scripts/installed-apps.py"))
 RSD_ENDPOINT_FILE = os.environ.get("SIDEY_RSD_ENDPOINT_FILE", "/run/sidey/rsd-endpoint")
 
 
@@ -447,6 +449,10 @@ def run_intent(cp, job, cache_dir):
         cp.update(job_id, "completed", progress=100, result={"inventory": True})
         return
 
+    if job_type == "installed_apps":
+        _run_installed_apps(cp, job, cache_dir)
+        return
+
     if job_type not in ("install", "verify", "refresh", "uninstall", "livecontainer_push"):
         cp.update(job_id, "failed", error_category="unsupported_job_type",
                   error_details=f"device service cannot execute {job_type} jobs")
@@ -537,6 +543,52 @@ def _run_livecontainer_push(cp, job, cache_dir):
                       error_details=tail or f"push script exited {rc}")
     except Exception as exc:
         log(f"job {job_id}: livecontainer_push execution failed: {exc}")
+        cp.update(job_id, "failed", error_category="install_failed", error_details=str(exc))
+
+
+def _run_installed_apps(cp, job, cache_dir):
+    """installed_apps: inventory system apps + LiveContainer guest apps over
+    the wireless RSD tunnel and report them in the job result."""
+    job_id = job["id"]
+    params = job.get("parameters") or {}
+    if isinstance(params, str):
+        params = json.loads(params)
+    bundle = params.get("bundle_id", "") or "com.kdt.livecontainer"
+
+    log(f"job {job_id}: installed_apps bundle={bundle}")
+    cp.update(job_id, "in_progress", progress=0)
+
+    try:
+        if not _wait_for_rsd_endpoint(120):
+            raise RuntimeError("RSD tunnel is not up (check sidey-wireless-tunnel.service)")
+
+        cmd = [VENV_PY, INSTALLED_APPS_SCRIPT, "--endpoint-file", RSD_ENDPOINT_FILE,
+               "--bundle", bundle]
+        env = dict(os.environ)
+        env["PYTHONUNBUFFERED"] = "1"
+        rc, captured, duration, timed_out = _run_wrapper(cp, job_id, cmd, env)
+        if rc != 0:
+            tail = "\n".join(captured[-25:])[-2000:]
+            log(f"job {job_id}: installed_apps FAILED (rc={rc})")
+            cp.update(job_id, "failed",
+                      error_category="install_timeout" if timed_out else "install_failed",
+                      error_details=tail or f"installed-apps script exited {rc}")
+            return
+
+        stdout = "\n".join(captured)
+        try:
+            inventory = json.loads(stdout)
+        except Exception:
+            log(f"job {job_id}: installed_apps produced non-JSON output")
+            cp.update(job_id, "failed", error_category="install_failed",
+                      error_details="installed-apps script output was not JSON")
+            return
+        inventory["duration_seconds"] = duration
+        log(f"job {job_id}: {len(inventory.get('system', []))} system apps, "
+            f"{len(inventory.get('guests', []))} LiveContainer guests")
+        cp.update(job_id, "completed", progress=100, result=inventory)
+    except Exception as exc:
+        log(f"job {job_id}: installed_apps execution failed: {exc}")
         cp.update(job_id, "failed", error_category="install_failed", error_details=str(exc))
 
 

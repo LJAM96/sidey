@@ -681,6 +681,7 @@
         <thead>
           <tr>
             <th>Device</th>
+            <th>⚠️ Days Left</th>
             <th>Profile Expiry</th>
             <th>Next Refresh Due</th>
             <th>Last Result</th>
@@ -689,7 +690,36 @@
           </tr>
         </thead>
         <tbody id="refreshList">
-          <tr><td colspan="6" class="text-muted" style="text-align:center;">Loading deployments...</td></tr>
+          <tr><td colspan="7" class="text-muted" style="text-align:center;">Loading deployments...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Installed Apps (LiveContainer) -->
+  <section class="card">
+    <div class="card-title">
+      <span>📱 Installed Apps on Phone</span>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <select id="installedAppsDeviceSelect" class="select-input" style="max-width:240px;">
+          <option value="">Select device...</option>
+        </select>
+        <button class="btn btn-sm" onclick="refreshInstalledApps()" title="Query the phone for installed system apps + LiveContainer guest apps">↻ Refresh Inventory</button>
+        <span id="installedAppsStatus" class="text-muted" style="font-size:12px;">Not loaded</span>
+      </div>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>App</th>
+            <th>Bundle ID</th>
+            <th>Version</th>
+            <th>Type</th>
+          </tr>
+        </thead>
+        <tbody id="installedAppsList">
+          <tr><td colspan="4" class="text-muted" style="text-align:center;">Click "↻ Refresh Inventory" to query the phone.</td></tr>
         </tbody>
       </table>
     </div>
@@ -872,6 +902,114 @@ function fmtDate(d) {
   } catch(e) {
     return String(d);
   }
+}
+
+function daysLeftBadge(expiry) {
+  if (!expiry) return "—";
+  try {
+    const exp = new Date(expiry);
+    const now = Date.now();
+    const days = Math.ceil((exp.getTime() - now) / 86400000);
+    if (days < 0) return `<span class="badge badge-error">expired ${-days}d ago</span>`;
+    if (days <= 7) return `<span class="badge badge-error">⏳ ${days} day${days === 1 ? '' : 's'} left</span>`;
+    if (days <= 30) return `<span class="badge badge-warning">⏳ ${days} days left</span>`;
+    return `<span class="badge badge-success">⏳ ${days} days left</span>`;
+  } catch(e) {
+    return String(expiry);
+  }
+}
+
+function installInLiveContainer(artId) {
+  const url = encodeURIComponent(`${getStoreBaseURL()}/api/v1/store/artifacts/${encodeURIComponent(artId)}/install.ipa`);
+  window.location.href = `livecontainer://install?url=${url}`;
+}
+
+const installedAppsState = { jobPollId: null, lastResult: null };
+
+async function refreshInstalledApps() {
+  const deviceSel = document.getElementById("installedAppsDeviceSelect");
+  const devId = deviceSel.value;
+  const statusEl = document.getElementById("installedAppsStatus");
+  if (!devId) {
+    statusEl.textContent = "⚠️ Select a device first";
+    return;
+  }
+  if (installedAppsState.jobPollId) return;
+  statusEl.textContent = "⏳ Querying phone...";
+  try {
+    const resp = await apiFetch("/api/v1/admin/livecontainer/installed-apps", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: devId })
+    });
+    if (!resp.ok) {
+      statusEl.textContent = `⚠️ ${await resp.text()}`;
+      return;
+    }
+    const data = await resp.json();
+    installedAppsState.jobPollId = data.job_id;
+    pollInstalledAppsJob();
+  } catch (e) {
+    statusEl.textContent = "⚠️ " + (e.message || e);
+  }
+}
+
+function pollInstalledAppsJob() {
+  const statusEl = document.getElementById("installedAppsStatus");
+  clearInterval(installedAppsState.jobPollId && installedAppsState.pollTimer);
+  installedAppsState.pollTimer = setInterval(async () => {
+    try {
+      const jobsRes = await apiFetch("/api/v1/dashboard/jobs");
+      if (!jobsRes.ok) return;
+      const jobsData = await jobsRes.json();
+      const job = (jobsData.rows || []).find(j => j.id === installedAppsState.jobPollId);
+      if (!job) return;
+      if (job.state === "completed") {
+        clearInterval(installedAppsState.pollTimer);
+        installedAppsState.jobPollId = null;
+        let inventory = {};
+        try { inventory = JSON.parse(job.result || "{}"); } catch(e) {}
+        installedAppsState.lastResult = inventory;
+        renderInstalledApps(inventory);
+        statusEl.textContent = `✓ Updated ${new Date().toLocaleTimeString()}`;
+        installedAppsState.lastResult = inventory;
+        fetchDashboard();
+      } else if (job.state === "failed" || job.state === "dead") {
+        clearInterval(installedAppsState.pollTimer);
+        installedAppsState.jobPollId = null;
+        statusEl.textContent = `⚠️ ${job.error_details || job.error_category || "failed"}`;
+      } else {
+        statusEl.textContent = "⏳ " + (job.state || "running") + "...";
+      }
+    } catch(e) {}
+  }, 2000);
+}
+
+function renderInstalledApps(inventory) {
+  const listEl = document.getElementById("installedAppsList");
+  const guests = inventory.guests || [];
+  const system = inventory.system || [];
+  const docs = inventory.documents || [];
+  const rows = [];
+
+  guests.forEach(g => rows.push({ type: "LiveContainer", name: g.name || g.bundle_id, bid: g.bundle_id, ver: g.version || "—" }));
+  system.forEach(s => rows.push({ type: "System", name: s.name || s.bundle_id, bid: s.bundle_id, ver: s.version || "—" }));
+
+  if (rows.length === 0) {
+    listEl.innerHTML = `<tr><td colspan="4" class="text-muted" style="text-align:center;">No apps reported${inventory.guest_error ? " (" + inventory.guest_error + ")" : ""}</td></tr>`;
+    return;
+  }
+  rows.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type.localeCompare(b.type)));
+  listEl.innerHTML = rows.map(r => `
+    <tr>
+      <td><strong>${r.name}</strong>${r.type === "LiveContainer" ? ' <span class="badge badge-neutral" style="font-size:10px;">guest</span>' : ''}</td>
+      <td class="mono" style="font-size:11px;">${r.bid}</td>
+      <td>${r.ver}</td>
+      <td><span class="badge ${r.type === 'LiveContainer' ? 'badge-success' : 'badge-neutral'}">${r.type}</span></td>
+    </tr>
+  `).join("") + (docs.length ? `
+    <tr><td colspan="4" class="text-muted" style="font-size:11px; padding-top:6px;">📄 Pending in LiveContainer Documents (not yet imported): ${docs.join(", ")}</td></tr>
+  ` : "");
 }
 
 // -------------------------------------------------------------
@@ -1574,7 +1712,12 @@ async function fetchDashboard() {
     const currentSelected = targetDeviceSelect.value || (devRows.length > 0 ? devRows[0].id : "");
     targetDeviceSelect.innerHTML = devRows.length === 0 ? '<option value="">No connected devices detected</option>' :
       devRows.map(d => `<option value="${d.id}" ${d.id === currentSelected ? 'selected' : ''}>${d.device_name || 'Device'} (${d.model || d.platform}) [${d.platform}]</option>`).join("");
-    
+
+    const iaDeviceSel = document.getElementById("installedAppsDeviceSelect");
+    const iaCurrent = iaDeviceSel.value || currentSelected || (devRows.length > 0 ? devRows[0].id : "");
+    iaDeviceSel.innerHTML = devRows.length === 0 ? '<option value="">No connected devices detected</option>' :
+      devRows.map(d => `<option value="${d.id}" ${d.id === iaCurrent ? 'selected' : ''}>${d.device_name || 'Device'} (${d.model || d.platform}) [${d.platform}]</option>`).join("");
+
     checkSideloadReady();
 
     const devicesList = document.getElementById("devicesList");
@@ -1601,6 +1744,19 @@ async function fetchDashboard() {
 
     // 2. Apple Accounts Pool
     const accRes = await apiFetch("/api/v1/dashboard/accounts");
+    let certExpiryByAccount = {};
+    const certRes = await apiFetch("/api/v1/dashboard/certificates");
+    if (certRes.ok) {
+      const certData = await certRes.json();
+      (certData.rows || []).forEach(c => {
+        if (!c.revoked && c.label && c.expiry_at) {
+          const key = c.label;
+          if (!certExpiryByAccount[key] || new Date(c.expiry_at) > new Date(certExpiryByAccount[key])) {
+            certExpiryByAccount[key] = c.expiry_at;
+          }
+        }
+      });
+    }
     if (accRes.ok) {
       const accData = await accRes.json();
       const accRows = accData.rows || [];
@@ -1647,7 +1803,7 @@ async function fetchDashboard() {
               <div class="account-meta-line">
                 <span>Team ID: <strong class="mono">${a.team_identifier || 'Pending'}</strong></span>
                 <span>Devices: <strong>${a.registered_device_count || 0} / 100</strong></span>
-                <span>Certificates: <strong>${a.cert_count || 0} Active</strong></span>
+                <span>Certificates: <strong>${a.cert_count || 0} Active</strong>${certExpiryByAccount[a.label] ? ` ${daysLeftBadge(certExpiryByAccount[a.label])}` : ''}</span>
                 <span>Status: <strong class="badge ${a.auth_state === 'authenticated' ? 'badge-success' : 'badge-warning'}" style="font-size:10px; padding:2px 6px;">${a.auth_state || 'unknown'}</strong></span>
               </div>
             </div>
@@ -1688,11 +1844,12 @@ async function fetchDashboard() {
       const refRows = refData.rows || [];
       const refreshList = document.getElementById("refreshList");
       if (refRows.length === 0) {
-        refreshList.innerHTML = `<tr><td colspan="6" class="text-muted" style="text-align:center;">No active deployments</td></tr>`;
+        refreshList.innerHTML = `<tr><td colspan="7" class="text-muted" style="text-align:center;">No active deployments</td></tr>`;
       } else {
         refreshList.innerHTML = refRows.map(r => `
           <tr>
             <td><strong>${r.device_name || 'Device'}</strong></td>
+            <td>${daysLeftBadge(r.profile_expiry_at)}</td>
             <td>${fmtDate(r.profile_expiry_at)}</td>
             <td>${fmtDate(r.next_refresh_due_at)}</td>
             <td><span class="badge ${r.last_refresh_result === 'completed' ? 'badge-success' : r.last_refresh_result === 'failed' ? 'badge-error' : 'badge-neutral'}">${r.last_refresh_result || '—'}</span></td>

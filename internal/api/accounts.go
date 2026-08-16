@@ -547,3 +547,64 @@ func (s *Server) handleLiveContainerP12Push(w http.ResponseWriter, r *http.Reque
 		"message":    "Certificate p12 queued for wireless transfer to LiveContainer",
 	})
 }
+
+type installedAppsRequest struct {
+	DeviceID uuid.UUID `json:"device_id"`
+	BundleID string    `json:"bundle_id"`
+}
+
+// handleInstalledApps enqueues an installed_apps inventory job for a device:
+// the device service queries the installation proxy for system apps and lists
+// the guest apps inside the LiveContainer container, then reports the
+// inventory in the job result.
+func (s *Server) handleInstalledApps(w http.ResponseWriter, r *http.Request) {
+	var req installedAppsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.DeviceID == uuid.Nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "device_id is required"})
+		return
+	}
+	bundleID := strings.TrimSpace(req.BundleID)
+	if bundleID == "" {
+		bundleID = "com.kdt.livecontainer"
+	}
+
+	var udid, deviceName, platform string
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT udid, COALESCE(device_name, ''), platform
+		FROM devices WHERE id = $1`, req.DeviceID).Scan(&udid, &deviceName, &platform)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "device not found"})
+		return
+	}
+
+	params := map[string]any{
+		"udid":        udid,
+		"device_name": deviceName,
+		"device_type": platform,
+		"bundle_id":   bundleID,
+	}
+	var jobID uuid.UUID
+	err = s.pool.QueryRow(r.Context(), `
+		INSERT INTO jobs (job_type, device_id, parameters, max_attempts, idempotency_key)
+		VALUES ('installed_apps', $1, $2, 2, $3)
+		RETURNING id`, req.DeviceID, params, uuid.New().String()).Scan(&jobID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "enqueuing installed apps inventory job failed")
+		return
+	}
+
+	s.audit.Record(r.Context(), "admin", "installed_apps.queued", audit.WithData(map[string]any{
+		"device_id": req.DeviceID,
+		"job_id":    jobID,
+	}))
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"status":  "ok",
+		"job_id":  jobID.String(),
+		"message": "Installed apps inventory queued",
+	})
+}
