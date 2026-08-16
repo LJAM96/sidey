@@ -35,6 +35,20 @@ async def _usbmux_provider(udid: str):
     return await create_using_usbmux(udid)
 
 
+def candidate_bundles(wanted: str) -> list[str]:
+    """Sideloaded apps are team-suffixed on modern iOS (e.g.
+    com.kdt.livecontainer.A7VT6RU6XK); HouseArrest vends by the *installed*
+    bundle id, so probe the plain id first, then team-suffixed variants with
+    the last path component uppercased."""
+    candidates = [wanted]
+    if "." in wanted:
+        base, _, team = wanted.rpartition(".")
+        if team.isdigit() or team.isupper():
+            candidates.append(base + "." + team.upper())
+        candidates.append(base + "." + team.upper())
+    return candidates
+
+
 async def push_file(endpoint_file, udid, file_path: str, bundle: str):
     if not os.path.isfile(file_path):
         sys.exit(f"error: source file '{file_path}' does not exist")
@@ -43,6 +57,7 @@ async def push_file(endpoint_file, udid, file_path: str, bundle: str):
     file_size = os.path.getsize(file_path)
 
     try:
+        from pymobiledevice3.exceptions import AppNotInstalledError
         from pymobiledevice3.services.house_arrest import HouseArrestService
     except ImportError:
         sys.exit("error: pymobiledevice3 is required (install via pip)")
@@ -54,29 +69,38 @@ async def push_file(endpoint_file, udid, file_path: str, bundle: str):
         print(f"Connecting to device {udid} via USB...")
         provider = await _usbmux_provider(udid)
 
-    print(f"Opening HouseArrest for bundle '{bundle}'...")
-
-    async with await HouseArrestService.create(provider, bundle, documents_only=False) as ha:
+    last_err = None
+    for candidate in candidate_bundles(bundle):
+        print(f"Opening HouseArrest for bundle '{candidate}'...")
         try:
-            listing = await ha.listdir("/Documents")
-        except Exception:
-            await ha.mkdir("/Documents")
-            listing = []
+            ha = await HouseArrestService.create(provider, candidate, documents_only=False)
+        except AppNotInstalledError as exc:
+            last_err = exc
+            print(f"  not installed ({exc}); trying next candidate...")
+            continue
+        async with ha:
+            try:
+                await ha.listdir("/Documents")
+            except Exception:
+                await ha.mkdir("/Documents")
 
-        remote_path = f"/Documents/{filename}"
-        print(f"Transferring {filename} ({file_size / (1024*1024):.2f} MB) to {remote_path}...")
+            remote_path = f"/Documents/{filename}"
+            print(f"Transferring {filename} ({file_size / (1024*1024):.2f} MB) to {remote_path}...")
 
-        chunk_size = 64 * 1024
-        handle = await ha.fopen(remote_path, "wb")
-        with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                await ha.fwrite(handle, chunk)
-        await ha.fclose(handle)
+            chunk_size = 64 * 1024
+            handle = await ha.fopen(remote_path, "wb")
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    await ha.fwrite(handle, chunk)
+            await ha.fclose(handle)
 
-        print(f"Successfully transferred {filename} to LiveContainer on device!")
+            print(f"Successfully transferred {filename} to LiveContainer ({candidate}) on device!")
+            return
+    sys.exit(f"error: no installed LiveContainer bundle among "
+             f"{candidate_bundles(bundle)} ({last_err})")
 
 
 async def main():
