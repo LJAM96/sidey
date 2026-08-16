@@ -95,15 +95,9 @@ async def push_file(endpoint_file, udid, file_path: str, bundle: str):
         remote_path = f"/Documents/{filename}"
         print(f"Transferring {filename} ({file_size / (1024*1024):.2f} MB) to {remote_path}...")
 
-        chunk_size = 64 * 1024
-        handle = await ha.fopen(remote_path, "wb")
         with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                await ha.fwrite(handle, chunk)
-        await ha.fclose(handle)
+            payload = f.read()
+        await ha.set_file_contents(remote_path, payload)
 
         print(f"Successfully transferred {filename} to LiveContainer on device!")
 
