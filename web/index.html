@@ -711,10 +711,11 @@
             <th>Quarantine State</th>
             <th>SHA256</th>
             <th>Actions</th>
+            <th>Install</th>
           </tr>
         </thead>
         <tbody id="artifactsList">
-          <tr><td colspan="7" class="text-muted" style="text-align:center;">Loading artifacts...</td></tr>
+          <tr><td colspan="8" class="text-muted" style="text-align:center;">Loading artifacts...</td></tr>
         </tbody>
       </table>
     </div>
@@ -1709,7 +1710,7 @@ async function fetchDashboard() {
       const artRows = artData.rows || [];
       const artifactsList = document.getElementById("artifactsList");
       if (artRows.length === 0) {
-        artifactsList.innerHTML = `<tr><td colspan="7" class="text-muted" style="text-align:center;">No artifacts uploaded</td></tr>`;
+        artifactsList.innerHTML = `<tr><td colspan="8" class="text-muted" style="text-align:center;">No artifacts uploaded</td></tr>`;
       } else {
         artifactsList.innerHTML = artRows.map(a => `
           <tr>
@@ -1721,6 +1722,9 @@ async function fetchDashboard() {
             <td class="mono" style="font-size:10px;">${String(a.sha256).slice(0, 16)}...</td>
             <td>
               ${a.quarantine_state !== 'approved' ? `<button class="btn btn-sm" onclick="approveArtifact('${a.id}')">Approve</button>` : `<span class="badge badge-success">Approved</span>`}
+            </td>
+            <td>
+              ${a.quarantine_state === 'approved' ? `<button class="btn btn-sm" onclick="installInLiveContainer('${a.id}')" title="Fetch & install this IPA straight into LiveContainer on the phone (no manual download)">⚡ Install</button>` : ''}
             </td>
           </tr>
         `).join("");
@@ -1745,6 +1749,11 @@ async function approveArtifact(artId) {
     body: JSON.stringify({ state: "approved" })
   });
   fetchDashboard();
+}
+
+function installInLiveContainer(artId) {
+  const url = encodeURIComponent(`${getStoreBaseURL()}/api/v1/store/artifacts/${encodeURIComponent(artId)}/install.ipa`);
+  window.location.href = `livecontainer://install?url=${url}`;
 }
 
 fetchDashboard();

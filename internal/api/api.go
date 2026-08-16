@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /source.json", s.handleStoreSourceJSON)
 	mux.HandleFunc("GET /api/v1/store/source.json", s.handleStoreSourceJSON)
+	mux.HandleFunc("GET /api/v1/store/artifacts/{id}/install.ipa", s.handleStoreArtifactInstall)
 
 	mux.Handle("POST /api/v1/artifacts", s.admin(s.handleUploadArtifact))
 	mux.Handle("PATCH /api/v1/artifacts/{id}", s.admin(s.handleSetArtifactState))

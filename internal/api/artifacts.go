@@ -219,6 +219,34 @@ func (s *Server) handleDownloadArtifact(w http.ResponseWriter, r *http.Request) 
 	http.ServeFile(w, r, path)
 }
 
+// handleStoreArtifactInstall serves an approved artifact's IPA to the phone
+// without admin auth, so LiveContainer can fetch and install it directly via
+// livecontainer://install?url=...
+func (s *Server) handleStoreArtifactInstall(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid artifact id"})
+		return
+	}
+	var sha256, filename string
+	err = s.pool.QueryRow(r.Context(),
+		`SELECT sha256, filename FROM artifacts WHERE id = $1 AND quarantine_state = 'approved'`, id).Scan(&sha256, &filename)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "artifact not found"})
+		return
+	}
+	path := s.artifacts.Path(sha256)
+	if !s.artifacts.Exists(sha256) {
+		s.writeError(w, http.StatusInternalServerError, "artifact blob missing")
+		return
+	}
+	s.audit.Record(r.Context(), "store", "artifact.installed",
+		audit.WithData(map[string]any{"artifact_id": id, "sha256": sha256}))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeFile(w, r, path)
+}
+
 // nullString converts empty strings to NULL for nullable columns.
 func nullString(s string) any {
 	if s == "" {
