@@ -1134,8 +1134,58 @@ async function downloadSigningCertificate(accountId, label) {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
+    const password = resp.headers.get("X-P12-Password") || "";
+    if (password) {
+      alert(`Certificate exported!\n\nTo use it in LiveContainer (JIT-less mode) on your iPhone:\n1. Open LiveContainer → Settings → Certificates → Import\n2. Pick this .p12 file and enter the password:\n\n  ${password}\n\n(You can also use “📲 Send to phone” to copy it onto the phone directly.)`);
+    }
   } catch (e) {
     alert(`Failed to export signing certificate: ${e.message || e}`);
+  }
+}
+
+async function pushP12ToPhone(accountId, label) {
+  let deviceId = "";
+  try {
+    const res = await apiFetch("/api/v1/dashboard/devices");
+    if (res.ok) {
+      const data = await res.json();
+      const rows = Array.isArray(data) ? data : (data.devices || data.rows || []);
+      const targets = rows.filter(d => (d.platform || "").toLowerCase() !== "tvos");
+      if (targets.length === 1) deviceId = targets[0].id;
+      else if (targets.length > 1) {
+        const choice = prompt(`Multiple devices found. Paste the device ID to send to:\n\n${targets.map(d => `${d.id} — ${d.device_name || d.platform}`).join("\n")}\n\nOr leave blank for: ${targets[0].id}`);
+        deviceId = (choice && choice.trim()) || targets[0].id;
+      } else {
+        alert("No iOS device found. Add a device first and ensure the wireless tunnel is up.");
+        return;
+      }
+    } else {
+      alert("Could not list devices (HTTP " + res.status + ").");
+      return;
+    }
+  } catch (e) {
+    alert(`Could not list devices: ${e.message || e}`);
+    return;
+  }
+
+  try {
+    const resp = await apiFetch("/api/v1/admin/livecontainer/push-p12", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apple_account_id: accountId, device_id: deviceId })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      alert(`Failed to queue .p12 push: ${data.error || ("HTTP " + resp.status)}`);
+      return;
+    }
+    if (data.password) {
+      alert(`Certificate .p12 sent to your iPhone!\n\nFile: ${data.filename || "certificate.p12"}\nPassword to enter in LiveContainer (Settings → Certificates → Import):\n\n  ${data.password}\n\nThe transfer runs in the background; refresh the page in ~30s to confirm.`);
+    } else {
+      alert(`Certificate .p12 push queued (job ${data.job_id || ""}). Transfer runs in the background; refresh in ~30s to confirm.`);
+    }
+  } catch (e) {
+    alert(`Failed to queue .p12 push: ${e.message || e}`);
   }
 }
 
@@ -1556,6 +1606,7 @@ async function fetchDashboard() {
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                   <span class="badge ${badgeClass}">${usedSlots}/3 App Slots (${freeSlots} free)</span>
                   <button class="btn btn-sm" onclick="downloadSigningCertificate('${a.id}', '${a.label}')" title="Download this account's signing certificate (.p12) for LiveContainer JIT-less mode">🔑 .p12</button>
+                  <button class="btn btn-sm" onclick="pushP12ToPhone('${a.id}', '${a.label}')" title="Send this account's signing certificate (.p12) straight into LiveContainer on your iPhone (JIT-less mode)">📲 Send to phone</button>
                   <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}', '${a.label}')">&times;</button>
                 </div>
               </div>
