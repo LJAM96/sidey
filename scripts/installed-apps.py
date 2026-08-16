@@ -66,6 +66,57 @@ async def _installed_livecontainer_bundle(provider) -> str | None:
     return None
 
 
+async def _guest_app_names(provider, target: str):
+    """Best-effort display names for LiveContainer guest apps.
+
+    Each guest lives in /Documents/Applications/<something>/ where the guest
+    directory itself is the .app bundle, so Info.plist sits at its root (some
+    installs nest one .app subdirectory instead). Read Info.plist over
+    HouseArrest to find the display name and version."""
+    import plistlib
+
+    from pymobiledevice3.services.house_arrest import HouseArrestService
+
+    names = {}
+    try:
+        async with await HouseArrestService.create(provider, target, documents_only=False) as ha:
+            apps_dir = await ha.listdir("/Documents/Applications")
+            for item in apps_dir:
+                guest = str(item)
+                if guest in (".", ".."):
+                    continue
+                names[guest] = {"name": guest, "version": "", "bundle_id": guest}
+
+                plist_candidates = [f"/Documents/Applications/{guest}/Info.plist"]
+                try:
+                    entries = await ha.listdir(f"/Documents/Applications/{guest}")
+                    for entry in sorted(entries):
+                        entry_name = str(entry)
+                        if entry_name.endswith(".app"):
+                            plist_candidates.append(
+                                f"/Documents/Applications/{guest}/{entry_name}/Info.plist")
+                except Exception:
+                    pass
+
+                for candidate in plist_candidates:
+                    try:
+                        plist_data = await ha.get_file_contents(candidate)
+                        parsed = plistlib.loads(plist_data)
+                        names[guest] = {
+                            "name": parsed.get("CFBundleDisplayName")
+                                    or parsed.get("CFBundleName")
+                                    or guest,
+                            "version": parsed.get("CFBundleShortVersionString", ""),
+                            "bundle_id": parsed.get("CFBundleIdentifier", guest),
+                        }
+                        break
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return names
+
+
 async def inventory(endpoint_file, udid, bundle: str):
     from pymobiledevice3.services.house_arrest import HouseArrestService
     from pymobiledevice3.services.installation_proxy import InstallationProxyService
@@ -116,14 +167,17 @@ async def inventory(endpoint_file, udid, bundle: str):
                 apps_dir = await ha.listdir("/Documents/Applications")
             except Exception:
                 apps_dir = []
+            guest_names = await _guest_app_names(provider, target)
             for item in sorted(apps_dir):
                 guest_name = str(item)
                 if guest_name in (".", ".."):
                     continue
+                meta = guest_names.get(guest_name, {})
                 result["guests"].append({
-                    "bundle_id": guest_name,
-                    "name": guest_name,
-                    "version": "",
+                    "bundle_id": meta.get("bundle_id") or guest_name,
+                    "name": meta.get("name") or guest_name,
+                    "version": meta.get("version", ""),
+                    "container": guest_name,
                 })
     except Exception as exc:
         result["guest_error"] = str(exc)
