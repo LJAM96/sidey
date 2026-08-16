@@ -81,7 +81,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	s.queryTable(w, r, `
 		SELECT id, job_type, device_id, application_id, state, attempt,
 		       progress, parameters, claimed_by, lease_expires_at,
-		       error_category, error_details, retry_at, created_at,
+		       error_category, error_details, retry_at, result, created_at,
 		       started_at, completed_at
 		FROM jobs ORDER BY created_at DESC LIMIT 200`)
 }
