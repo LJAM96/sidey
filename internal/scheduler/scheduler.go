@@ -127,9 +127,10 @@ func (s *Service) tick(ctx context.Context) (int, error) {
 			s.logger.Warn("refresh job creation failed", "deployment", d.ID, "error", err)
 			continue
 		}
-		if job == nil {
-			// Key already taken: only a dead job can hold it without advancing
-			// the cycle. Clear it and retry the create once in this pass.
+		if job != nil && job.State == "dead" {
+			// The cycle's key is held by a dead job: it can never advance the
+			// due/expiry dates, so it would block refresh forever. Drop it and
+			// retry the create once in this pass.
 			if err := s.releaseDeadCycle(ctx, key); err != nil {
 				s.logger.Warn("clearing dead refresh cycle failed",
 					"deployment", d.ID, "key", key, "error", err)
@@ -145,12 +146,13 @@ func (s *Service) tick(ctx context.Context) (int, error) {
 				s.logger.Warn("refresh job re-creation failed", "deployment", d.ID, "error", err)
 				continue
 			}
-			if job == nil {
+			if job != nil && job.State == "dead" {
 				continue
 			}
 			s.logger.Info("refresh cycle recovered from dead job",
 				"job", job.ID, "deployment", d.ID)
 		}
+		if job != nil {
 		created++
 		s.logger.Info("refresh scheduled",
 			"job", job.ID, "deployment", d.ID, "udid", d.Udid,
