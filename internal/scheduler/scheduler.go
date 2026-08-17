@@ -93,6 +93,11 @@ func (s *Service) dueDeployments(ctx context.Context) ([]dueDeployment, error) {
 // work within a cycle, while a completed refresh (which advances the expiry
 // and therefore the key) starts a new cycle even if the next due date falls
 // on the same calendar day.
+//
+// A dead refresh job holds its cycle's idempotency key forever (the due and
+// expiry dates never advance), which would silently starve the deployment of
+// all future refreshes. When the key conflicts with a dead job, the stale
+// row is removed so the cycle can be retried.
 func (s *Service) tick(ctx context.Context) (int, error) {
 	due, err := s.dueDeployments(ctx)
 	if err != nil {
@@ -122,14 +127,47 @@ func (s *Service) tick(ctx context.Context) (int, error) {
 			s.logger.Warn("refresh job creation failed", "deployment", d.ID, "error", err)
 			continue
 		}
-		if job != nil {
-			created++
-			s.logger.Info("refresh scheduled",
-				"job", job.ID, "deployment", d.ID, "udid", d.Udid,
-				"expiry_at", d.ExpiryAt.Format(time.RFC3339), "due_at", d.DueAt.Format(time.RFC3339))
+		if job == nil {
+			// Key already taken: only a dead job can hold it without advancing
+			// the cycle. Clear it and retry the create once in this pass.
+			if err := s.releaseDeadCycle(ctx, key); err != nil {
+				s.logger.Warn("clearing dead refresh cycle failed",
+					"deployment", d.ID, "key", key, "error", err)
+				continue
+			}
+			job, err = s.jobs.Create(ctx, "scheduler", jobs.CreateRequest{
+				JobType:        jobs.JobTypeRefresh,
+				DeviceID:       &d.DeviceID,
+				Parameters:     params,
+				IdempotencyKey: key,
+			})
+			if err != nil {
+				s.logger.Warn("refresh job re-creation failed", "deployment", d.ID, "error", err)
+				continue
+			}
+			if job == nil {
+				continue
+			}
+			s.logger.Info("refresh cycle recovered from dead job",
+				"job", job.ID, "deployment", d.ID)
 		}
+		created++
+		s.logger.Info("refresh scheduled",
+			"job", job.ID, "deployment", d.ID, "udid", d.Udid,
+			"expiry_at", d.ExpiryAt.Format(time.RFC3339), "due_at", d.DueAt.Format(time.RFC3339))
 	}
 	return created, nil
+}
+
+// releaseDeadCycle deletes a refresh job that holds the given idempotency key
+// but can never succeed. Deleting the row is safe: dead jobs are no longer
+// claimed, and the installation record / deployment state it described is
+// still authoritative for the next cycle.
+func (s *Service) releaseDeadCycle(ctx context.Context, key string) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM jobs
+		WHERE idempotency_key = $1 AND state = 'dead'`, key)
+	return err
 }
 
 // Run performs one scheduling pass and reports how many jobs were created.

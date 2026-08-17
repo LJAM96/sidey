@@ -115,6 +115,7 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
 	s.queryTable(w, r, `
 		SELECT d.device_name, d.udid, a.name AS agent_name,
+		       dep.id AS deployment_id,
 		       ir.provisioning_expiry_at AS profile_expiry_at,
 		       dep.next_refresh_due_at,
 		       dep.last_refresh_at, dep.last_refresh_result, dep.last_refresh_error,

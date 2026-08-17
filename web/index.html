@@ -682,6 +682,17 @@
     </div>
   </section>
 
+  <!-- My Phone -->
+  <section class="card" style="border-left: 3px solid var(--accent);">
+    <div class="card-title">
+      <span>📱 My Phone</span>
+      <span id="myPhoneSub" class="text-muted" style="font-size:12px;">Loading…</span>
+    </div>
+    <div id="myPhoneBody" style="display:flex; flex-direction:column; gap:10px; padding-top:8px;">
+      <div class="text-muted" style="text-align:center;">Loading…</div>
+    </div>
+  </section>
+
   <!-- Deployments & Auto-Refresh Calendar -->
   <section class="card">
     <div class="card-title">
@@ -1021,6 +1032,160 @@ function renderInstalledApps(inventory) {
   `).join("") + (docs.length ? `
     <tr><td colspan="4" class="text-muted" style="font-size:11px; padding-top:6px;">📄 Pending in LiveContainer Documents (not yet imported): ${docs.join(", ")}</td></tr>
   ` : "");
+}
+
+// -------------------------------------------------------------
+// My Phone summary card
+// -------------------------------------------------------------
+const myPhoneState = { inventoryStarted: false, refreshJobId: null, refreshTimer: null };
+
+async function ensureMyPhoneInventory() {
+  if (myPhoneState.inventoryStarted || installedAppsState.jobPollId) return;
+  myPhoneState.inventoryStarted = true;
+  try {
+    const devRes = await apiFetch("/api/v1/dashboard/devices");
+    if (!devRes.ok) return;
+    const devData = await devRes.json();
+    const ios = (devData.rows || []).find(d => d.platform === "ios");
+    const sel = document.getElementById("installedAppsDeviceSelect");
+    if (ios && sel) {
+      sel.value = ios.id;
+      await refreshInstalledApps();
+    }
+  } catch (e) {}
+}
+
+function renderMyPhone(refRows, devRows) {
+  const body = document.getElementById("myPhoneBody");
+  const sub = document.getElementById("myPhoneSub");
+  if (!body) return;
+
+  const ios = (devRows || []).find(d => d.platform === "ios");
+  const row = (refRows || []).find(r => r.udid && ios && ios.udid === r.udid);
+  const name = (row && row.device_name) || (ios && ios.device_name) || "iPhone";
+
+  if (!ios) {
+    sub.textContent = "No iPhone connected";
+    body.innerHTML = `<div class="text-muted" style="text-align:center;">Add an iOS device to see signing & refresh status here.</div>`;
+    return;
+  }
+
+  const seen = humanAge(ios.last_connected_at);
+  const onlineBadge = seen == null ? `<span class="badge badge-neutral">never seen</span>`
+    : (seen === "just now" ? `<span class="badge badge-success">● online</span>`
+      : `<span class="badge badge-warning">● last seen ${seen}</span>`);
+  sub.innerHTML = `${name} · ${onlineBadge}`;
+
+  const lines = [];
+  if (row) {
+    const expiredAt = new Date(row.profile_expiry_at) < new Date();
+    lines.push(`<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span style="min-width:130px; font-weight:600;">Signing</span>
+      ${daysLeftBadge(row.profile_expiry_at)}
+      <span class="text-muted" style="font-size:12px;">profile expires ${fmtDate(row.profile_expiry_at)}</span>
+      ${expiredAt ? `<button class="btn btn-sm" onclick="refreshSigning('${ios.id}','${row.deployment_id || ''}','${row.profile_expiry_at || ''}')">↻ Re-sign now</button>` : ""}
+    </div>`);
+
+    const working = row.refresh_job_state === "claimed" || row.refresh_job_state === "in_progress"
+      || (row.last_refresh_result === "completed" && new Date(row.next_refresh_due_at) > new Date());
+    let refreshBadge = working
+      ? `<span class="badge badge-success">● auto-refresh on</span>`
+      : `<span class="badge badge-error">● auto-refresh ${row.refresh_job_state === "dead" ? "broken" : "off"}</span>`;
+    const refreshNote = row.refresh_job_state === "dead" || row.last_refresh_result === "failed"
+      ? `<span class="text-muted" style="font-size:12px; color:var(--error);">last job ${row.refresh_job_state || row.last_refresh_result} — ${row.job_error || row.last_refresh_error || "no details"}</span>`
+      : `<span class="text-muted" style="font-size:12px;">next refresh due ${fmtDate(row.next_refresh_due_at)}</span>`;
+    lines.push(`<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span style="min-width:130px; font-weight:600;">Auto-refresh</span>
+      ${refreshBadge}
+      ${refreshNote}
+      <button class="btn btn-sm" onclick="refreshSigning('${ios.id}','${row.deployment_id || ''}','${row.profile_expiry_at || ''}')">↻ Refresh now</button>
+    </div>`);
+  } else {
+    lines.push(`<div class="text-muted" style="font-size:13px;">No deployment/profile yet — sideload an app first and the 7-day signing calendar will appear here.</div>`);
+  }
+
+  const inv = installedAppsState.lastResult || {};
+  const guests = inv.guests || [];
+  const pending = inv.documents || [];
+  if (guests.length || pending.length) {
+    const chips = guests.map(g => `<span class="badge badge-success">${g.name || g.bundle_id}</span>`).join(" ");
+    lines.push(`<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span style="min-width:130px; font-weight:600;">Sideloaded (${guests.length})</span>
+      ${chips || '<span class="text-muted" style="font-size:12px;">none (pending import in LiveContainer)</span>'}
+      <button class="btn btn-sm" onclick="refreshInstalledApps()" title="Re-query the phone">↻ Recheck</button>
+    </div>`);
+    if (pending.length) {
+      lines.push(`<div style="display:flex; gap:10px; flex-wrap:wrap; padding-left:140px;">
+        <span class="text-muted" style="font-size:12px;">📄 imported, not yet opened in LiveContainer (My Apps → ➕ → pick file): ${pending.join(", ")}</span>
+      </div>`);
+    }
+  } else if (!inv.guest_error && !inv.system) {
+    lines.push(`<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span style="min-width:130px; font-weight:600;">Sideloaded</span>
+      <span class="text-muted" style="font-size:12px;">⏳ querying the phone…</span>
+    </div>`);
+  }
+
+  body.innerHTML = lines.join("");
+}
+
+async function refreshSigning(deviceId, deploymentId, expiryAt) {
+  if (!deviceId) return;
+  const btn = event && event.currentTarget;
+  if (btn) { btn.disabled = true; btn.textContent = "⏳…"; }
+  const dev = (liveDevices || []).find(d => d.id === deviceId);
+  try {
+    // One manual refresh goes through a fresh idempotency key so it is never
+    // swallowed by the scheduler's cycle key. The device service claims it
+    // and re-signs the profile over the wireless tunnel.
+    const resp = await apiFetch("/api/v1/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job_type: "refresh",
+        device_id: deviceId,
+        idempotency_key: "manual:" + (crypto.randomUUID ? crypto.randomUUID() : Date.now()),
+        parameters: {
+          deployment_id: deploymentId,
+          udid: (dev && dev.udid) || "",
+          device_name: (dev && dev.device_name) || "manual",
+          expiry_at: expiryAt || ""
+        }
+      })
+    });
+    if (!resp.ok) { alert("Failed to start refresh: " + await resp.text()); return; }
+    const data = await resp.json();
+    myPhoneState.refreshJobId = data.id;
+    pollMyPhoneRefresh();
+  } catch (e) {
+    alert("Failed to start refresh: " + (e.message || e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "↻ Refresh now"; }
+  }
+}
+
+function pollMyPhoneRefresh() {
+  if (!myPhoneState.refreshJobId) return;
+  clearInterval(myPhoneState.refreshTimer);
+  myPhoneState.refreshTimer = setInterval(async () => {
+    try {
+      const jobsRes = await apiFetch("/api/v1/dashboard/jobs");
+      if (!jobsRes.ok) return;
+      const jobsData = await jobsRes.json();
+      const job = (jobsData.rows || []).find(j => j.id === myPhoneState.refreshJobId);
+      if (!job) return;
+      if (job.state === "completed") {
+        clearInterval(myPhoneState.refreshTimer);
+        myPhoneState.refreshJobId = null;
+        alert("Refresh complete ✓");
+        fetchDashboard();
+      } else if (job.state === "failed" || job.state === "dead") {
+        clearInterval(myPhoneState.refreshTimer);
+        myPhoneState.refreshJobId = null;
+        alert("Refresh failed:\n\n" + friendlyJobError(job));
+      }
+    } catch (e) {}
+  }, 3000);
 }
 
 // -------------------------------------------------------------
@@ -1957,6 +2122,8 @@ async function fetchDashboard() {
           </tr>
         `).join("");
       }
+      window.__myPhoneRefresh = refRows.filter(r => r.udid && !(r.udid || '').startsWith('00000000'));
+      renderMyPhone(refRows, devicesRows);
     }
 
     // 5. Artifacts
@@ -1990,6 +2157,8 @@ async function fetchDashboard() {
   } catch(e) {
     console.error("Dashboard poll error:", e);
   }
+  ensureMyPhoneInventory();
+  renderMyPhone(window.__myPhoneRefresh || [], liveDevices || []);
 }
 
 function selectDeviceForSideload(devId) {
