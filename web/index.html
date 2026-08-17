@@ -1262,6 +1262,7 @@ sideloadBtn.onclick = async () => {
     }
 
     const jobStartTs = Date.now();
+    const preWarn = step3Hint.textContent.startsWith("⚠️") ? step3Hint.textContent : null;
     const pollJob = setInterval(async () => {
       try {
         const jobsRes = await apiFetch("/api/v1/dashboard/jobs");
@@ -1296,13 +1297,12 @@ sideloadBtn.onclick = async () => {
               alert("Installation failed:\n\n" + msg);
               sideloadBtn.disabled = false;
             } else {
-              const hadWarn = step3Hint.textContent.startsWith("⚠️");
-              step3Hint.className = "step-hint" + (hadWarn || job.error_details ? " warn" : "");
               const progress = `Working… attempt ${job.attempt}, ${elapsed}s elapsed`;
+              step3Hint.className = "step-hint" + (preWarn || job.error_details ? " warn" : "");
               if (job.error_details) {
                 step3Hint.textContent = `${progress} · last error: ${job.error_details}`;
-              } else if (hadWarn) {
-                step3Hint.textContent = step3Hint.textContent + ` · ${progress}`;
+              } else if (preWarn) {
+                step3Hint.textContent = `${preWarn} · ${progress}`;
               } else {
                 step3Hint.textContent = progress;
               }

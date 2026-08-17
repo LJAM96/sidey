@@ -125,5 +125,18 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// A job completed by the device service proves the RSD tunnel talked to
+	// the device, so refresh last_connected_at to keep the UI's
+	// phone-freshness warning honest (it is otherwise only set on device
+	// creation). Signing-worker completions never touch the phone and are
+	// excluded via the agents role.
+	if job.State == jobs.StateCompleted && job.DeviceID != nil {
+		var role string
+		if err := s.pool.QueryRow(r.Context(),
+			`SELECT role FROM agents WHERE id = $1`, agentID(r.Context())).Scan(&role); err == nil && role == "device_service" {
+			_, _ = s.pool.Exec(r.Context(), `
+				UPDATE devices SET last_connected_at = now() WHERE id = $1`, *job.DeviceID)
+		}
+	}
 	writeJSON(w, http.StatusOK, job)
 }
