@@ -282,6 +282,15 @@
   }
   .step-status.active { background: var(--warning); color: #000; animation: pulse 1.5s infinite; }
   .step-status.done { background: var(--success); color: #000; font-weight: bold; }
+  .step-row { flex-wrap: wrap; }
+  .step-hint {
+    flex-basis: 100%;
+    margin: -2px 0 0 30px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-muted);
+  }
+  .step-hint.warn { color: var(--warning); }
   @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
 
   .account-form {
@@ -549,10 +558,12 @@
         <div class="step-row" id="step3">
           <div class="step-status" id="step3Status">3</div>
           <span id="step3Label">3. Sign with selected Apple Account Certificate & profile</span>
+          <div class="step-hint" id="step3Hint"></div>
         </div>
         <div class="step-row" id="step4">
           <div class="step-status" id="step4Status">4</div>
           <span id="step4Label">4. Deploy to device via wireless RSD tunnel / USB</span>
+          <div class="step-hint" id="step4Hint"></div>
         </div>
       </div>
     </div>
@@ -1110,6 +1121,36 @@ function updateSlotIndicators() {
 // -------------------------------------------------------------
 // Execute Sideload Workflow
 // -------------------------------------------------------------
+
+// Translate raw job failures into actionable guidance for the UI.
+function friendlyJobError(job) {
+  const details = job.error_details || "";
+  const cat = job.error_category || "";
+  const hay = details + " " + cat;
+  if (/rsd|tunnel|wireless/i.test(hay))
+    return "iPhone unreachable — the wireless tunnel to the phone can't connect. Unlock the phone, open the Tailscale app and make sure the VPN is connected (phone must be on Wi-Fi with Tailscale on). The job retries automatically, or re-run the workflow once it's back.";
+  if (/auth|2fa|two[- ]factor|otp|login|password|credential|anisette|expired/i.test(hay))
+    return "Apple account problem: " + (details || cat) + " — refresh the account or re-enter credentials in the Apple Accounts panel.";
+  if (/certificate|cert|provisioning|profile|signing/i.test(hay))
+    return "Certificate / provisioning-profile problem: " + (details || cat) + " — check the certificates in the Apple Accounts panel.";
+  if (/download|fetch|upload|artifact|not found|404/i.test(hay))
+    return "Artifact transfer problem: " + (details || cat) + " — re-upload the IPA and try again.";
+  return (cat ? cat + ": " : "") + (details || "unknown error") + " — full details are in the Jobs table below.";
+}
+
+// Human "X ago" from an ISO timestamp (null if missing).
+function humanAge(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0 || !isFinite(ms)) return null;
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}
+
 sideloadBtn.onclick = async () => {
   if (!selectedFile || !targetDeviceSelect.value) return;
 
@@ -1129,10 +1170,14 @@ sideloadBtn.onclick = async () => {
   const step2Label = document.getElementById("step2Label");
   const step3Label = document.getElementById("step3Label");
   const step4Label = document.getElementById("step4Label");
+  const step3Hint = document.getElementById("step3Hint");
+  const step4Hint = document.getElementById("step4Hint");
+  step3Hint.textContent = "";
+  step4Hint.textContent = "";
 
   if (mode === "livecontainer") {
-    step3Label.textContent = "3. Bypass Apple signing (LiveContainer guest mode)";
-    step4Label.textContent = "4. Push IPA directly into LiveContainer over HouseArrest";
+    step3Label.textContent = "3. Transfer IPA to phone over wireless tunnel (no Apple signing needed)";
+    step4Label.textContent = "4. Import IPA into LiveContainer on your phone";
   } else {
     step3Label.textContent = "3. Sign with selected Apple Account Certificate & profile";
     step4Label.textContent = "4. Deploy to device via wireless RSD tunnel / USB";
@@ -1185,6 +1230,25 @@ sideloadBtn.onclick = async () => {
 
     step3Status.className = "step-status active";
     step3Status.textContent = "⏳";
+    step3Hint.textContent = "Contacting the phone...";
+
+    // Warn up-front when the phone hasn't been seen in a while — the most
+    // common reason a push appears stuck.
+    try {
+      const devRes = await apiFetch("/api/v1/dashboard/devices");
+      if (devRes.ok) {
+        const devData = await devRes.json();
+        const devRows = Array.isArray(devData) ? devData : (devData.rows || []);
+        const dev = devRows.find(d => d.id === deviceId);
+        if (dev) {
+          const seen = humanAge(dev.last_connected_at);
+          if (seen && seen !== "just now") {
+            step3Hint.textContent = `⚠️ Phone last seen ${seen} — if this step stalls, unlock the phone and make sure the Tailscale VPN is connected.`;
+            step3Hint.className = "step-hint warn";
+          }
+        }
+      }
+    } catch (e) {}
 
     const jobId = deployData.sign_job_id || deployData.job_id;
     if (!jobId) {
@@ -1197,6 +1261,7 @@ sideloadBtn.onclick = async () => {
       return;
     }
 
+    const jobStartTs = Date.now();
     const pollJob = setInterval(async () => {
       try {
         const jobsRes = await apiFetch("/api/v1/dashboard/jobs");
@@ -1204,20 +1269,43 @@ sideloadBtn.onclick = async () => {
           const jobsData = await jobsRes.json();
           const job = jobsData.rows.find(j => j.id === jobId);
           if (job) {
+            const elapsed = Math.round((Date.now() - jobStartTs) / 1000);
             if (job.state === "completed") {
               clearInterval(pollJob);
               step3Status.className = "step-status done";
               step3Status.textContent = "✓";
-              step4Status.className = "step-status done";
-              step4Status.textContent = "✓";
+              step3Hint.className = "step-hint";
+              if (mode === "livecontainer") {
+                step3Hint.textContent = `IPA transferred (${elapsed}s). Now import it on the phone: open LiveContainer → My Apps → ➕ → pick the .ipa (it's in On My iPhone → LiveContainer).`;
+                step4Status.className = "step-status active";
+                step4Status.textContent = "👉";
+                step4Hint.textContent = "Waiting for you to import on the phone — the file is already in LiveContainer's Documents folder.";
+              } else {
+                step4Status.className = "step-status done";
+                step4Status.textContent = "✓";
+              }
               sideloadBtn.disabled = false;
               fetchDashboard();
             } else if (job.state === "failed" || job.state === "dead") {
               clearInterval(pollJob);
               step3Status.className = "step-status";
               step3Status.textContent = "✗";
-              alert(`Installation failed: ${job.error_details || job.error_category || "error"}`);
+              const msg = friendlyJobError(job);
+              step3Hint.className = "step-hint warn";
+              step3Hint.textContent = msg;
+              alert("Installation failed:\n\n" + msg);
               sideloadBtn.disabled = false;
+            } else {
+              const hadWarn = step3Hint.textContent.startsWith("⚠️");
+              step3Hint.className = "step-hint" + (hadWarn || job.error_details ? " warn" : "");
+              const progress = `Working… attempt ${job.attempt}, ${elapsed}s elapsed`;
+              if (job.error_details) {
+                step3Hint.textContent = `${progress} · last error: ${job.error_details}`;
+              } else if (hadWarn) {
+                step3Hint.textContent = step3Hint.textContent + ` · ${progress}`;
+              } else {
+                step3Hint.textContent = progress;
+              }
             }
           }
         }
