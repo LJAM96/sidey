@@ -153,10 +153,11 @@ func (s *Service) tick(ctx context.Context) (int, error) {
 				"job", job.ID, "deployment", d.ID)
 		}
 		if job != nil {
-		created++
-		s.logger.Info("refresh scheduled",
-			"job", job.ID, "deployment", d.ID, "udid", d.Udid,
-			"expiry_at", d.ExpiryAt.Format(time.RFC3339), "due_at", d.DueAt.Format(time.RFC3339))
+			created++
+			s.logger.Info("refresh scheduled",
+				"job", job.ID, "deployment", d.ID, "udid", d.Udid,
+				"expiry_at", d.ExpiryAt.Format(time.RFC3339), "due_at", d.DueAt.Format(time.RFC3339))
+		}
 	}
 	return created, nil
 }
