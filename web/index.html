@@ -1079,21 +1079,38 @@ function renderMyPhone(refRows, devRows) {
   const lines = [];
   if (row) {
     const expiredAt = new Date(row.profile_expiry_at) < new Date();
+    const daysLeft = Math.ceil((new Date(row.profile_expiry_at) - new Date()) / 86400000);
+    const signBadge = daysLeft <= 0
+      ? `<span class="badge badge-error">⏳ EXPIRED ${Math.abs(daysLeft)}d ago</span>`
+      : daysLeft <= 2
+        ? `<span class="badge badge-error">⏳ ${daysLeft} day${daysLeft === 1 ? '' : 's'} left</span>`
+        : daysLeft <= 4
+          ? `<span class="badge badge-warning">⏳ ${daysLeft} days left</span>`
+          : `<span class="badge badge-success">⏳ ${daysLeft} days left</span>`;
     lines.push(`<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <span style="min-width:130px; font-weight:600;">Signing</span>
-      ${daysLeftBadge(row.profile_expiry_at)}
+      ${signBadge}
       <span class="text-muted" style="font-size:12px;">profile expires ${fmtDate(row.profile_expiry_at)}</span>
       ${expiredAt ? `<button class="btn btn-sm" onclick="refreshSigning('${ios.id}','${row.deployment_id || ''}','${row.profile_expiry_at || ''}')">↻ Re-sign now</button>` : ""}
     </div>`);
 
-    const working = row.refresh_job_state === "claimed" || row.refresh_job_state === "in_progress"
-      || (row.last_refresh_result === "completed" && new Date(row.next_refresh_due_at) > new Date());
-    let refreshBadge = working
-      ? `<span class="badge badge-success">● auto-refresh on</span>`
-      : `<span class="badge badge-error">● auto-refresh ${row.refresh_job_state === "dead" ? "broken" : "off"}</span>`;
-    const refreshNote = row.refresh_job_state === "dead" || row.last_refresh_result === "failed"
-      ? `<span class="text-muted" style="font-size:12px; color:var(--error);">last job ${row.refresh_job_state || row.last_refresh_result} — ${row.job_error || row.last_refresh_error || "no details"}</span>`
-      : `<span class="text-muted" style="font-size:12px;">next refresh due ${fmtDate(row.next_refresh_due_at)}</span>`;
+    const healthy = row.last_refresh_result === "ok" || row.last_refresh_result === "completed";
+    const running = row.refresh_job_state === "claimed" || row.refresh_job_state === "in_progress";
+    const working = running || (healthy && new Date(row.next_refresh_due_at) > new Date());
+    let refreshBadge, refreshNote;
+    if (running) {
+      refreshBadge = `<span class="badge badge-warning">● refreshing…</span>`;
+      refreshNote = `<span class="text-muted" style="font-size:12px;">attempt ${row.attempt || 1} in progress</span>`;
+    } else if (row.refresh_job_state === "dead") {
+      refreshBadge = `<span class="badge badge-error">● auto-refresh broken</span>`;
+      refreshNote = `<span class="text-muted" style="font-size:12px; color:var(--error);">last job dead — ${row.job_error || row.last_refresh_error || "no details"}</span>`;
+    } else if (working) {
+      refreshBadge = `<span class="badge badge-success">● auto-refresh on</span>`;
+      refreshNote = `<span class="text-muted" style="font-size:12px;">next refresh due ${fmtDate(row.next_refresh_due_at)}</span>`;
+    } else {
+      refreshBadge = `<span class="badge badge-error">● auto-refresh off</span>`;
+      refreshNote = `<span class="text-muted" style="font-size:12px; color:var(--error);">last refresh ${row.last_refresh_result || "failed"} — ${row.last_refresh_error || "no details"}</span>`;
+    }
     lines.push(`<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <span style="min-width:130px; font-weight:600;">Auto-refresh</span>
       ${refreshBadge}
