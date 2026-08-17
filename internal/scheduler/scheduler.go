@@ -31,6 +31,7 @@ type dueDeployment struct {
 	DeviceName   string
 	DueAt        time.Time
 	ExpiryAt     time.Time
+	ArtifactID   string
 }
 
 type Service struct {
@@ -55,14 +56,25 @@ func NewService(pool *pgxpool.Pool, logger *slog.Logger, jobService *jobs.Servic
 
 // dueDeployments returns deployments whose refresh is due (profile expiry is
 // within the lead window, or already past) and whose device has an agent.
+// It also resolves the signed artifact the deployment last installed from,
+// so a refresh can re-install the same app instead of whatever the installer
+// wrapper happens to default to.
 func (s *Service) dueDeployments(ctx context.Context) ([]dueDeployment, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT dep.id, dep.device_id, d.udid, COALESCE(d.device_name, ''),
 		       COALESCE(dep.next_refresh_due_at, ir.provisioning_expiry_at - $1::interval) AS due_at,
-		       COALESCE(ir.provisioning_expiry_at, dep.next_refresh_due_at + $1::interval) AS expiry_at
+		       COALESCE(ir.provisioning_expiry_at, dep.next_refresh_due_at + $1::interval) AS expiry_at,
+		       COALESCE(last_install.artifact_id, '') AS artifact_id
 		FROM deployments dep
 		JOIN installation_records ir ON ir.deployment_id = dep.id
 		JOIN devices d ON d.id = dep.device_id
+		LEFT JOIN LATERAL (
+			SELECT j.parameters->>'artifact_id' AS artifact_id
+			FROM jobs j
+			WHERE j.device_id = dep.device_id AND j.job_type = 'install'
+			  AND j.state = 'completed'
+			ORDER BY j.created_at DESC LIMIT 1
+		) last_install ON true
 		WHERE d.agent_id IS NOT NULL
 		  AND COALESCE(dep.next_refresh_due_at, ir.provisioning_expiry_at - $1::interval) <= now()
 		  AND ir.provisioning_expiry_at IS NOT NULL
@@ -76,7 +88,7 @@ func (s *Service) dueDeployments(ctx context.Context) ([]dueDeployment, error) {
 	for rows.Next() {
 		var d dueDeployment
 		var expiryAt *time.Time
-		if err := rows.Scan(&d.ID, &d.DeviceID, &d.Udid, &d.DeviceName, &d.DueAt, &expiryAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.DeviceID, &d.Udid, &d.DeviceName, &d.DueAt, &expiryAt, &d.ArtifactID); err != nil {
 			return nil, err
 		}
 		if expiryAt != nil {
@@ -113,6 +125,7 @@ func (s *Service) tick(ctx context.Context) (int, error) {
 			"udid":          d.Udid,
 			"device_name":   d.DeviceName,
 			"expiry_at":     d.ExpiryAt.UTC().Format(time.RFC3339),
+			"artifact_id":   d.ArtifactID,
 		})
 		if err != nil {
 			return created, err

@@ -20,7 +20,8 @@ DEVICE_UDID="${DEVICE_UDID:-00008120-001E11211184C01E}"
 DEVICE_IP="${DEVICE_IP:-100.110.172.118}"          # phone tailnet IP
 RSD_ENDPOINT_FILE="${RSD_ENDPOINT_FILE:-/run/sidey/rsd-endpoint}"
 
-IPA_PATH="${1:-/tmp/opencode/SideStore.ipa}"
+IPA_PATH="${1:-}"
+[ -n "$IPA_PATH" ] || { echo "error: no IPA given; refresh/install jobs must carry an artifact_id (refusing to guess)" >&2; exit 1; }
 [ -f "$IPA_PATH" ] || { echo "IPA not found: $IPA_PATH" >&2; exit 1; }
 
 # 1. Ensure the wireless tunnel is up (systemd unit preferred).

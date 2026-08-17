@@ -120,7 +120,8 @@ func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
 		       dep.next_refresh_due_at,
 		       dep.last_refresh_at, dep.last_refresh_result, dep.last_refresh_error,
 		       j.state AS refresh_job_state, j.attempt, j.error_category,
-		       j.error_details AS job_error, j.updated_at AS job_updated_at
+		       j.error_details AS job_error, j.updated_at AS job_updated_at,
+		       COALESCE(last_install.artifact_id, '') AS artifact_id
 		FROM deployments dep
 		JOIN devices d ON d.id = dep.device_id
 		JOIN installation_records ir ON ir.deployment_id = dep.id
@@ -131,5 +132,12 @@ func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
 			WHERE j.device_id = dep.device_id AND j.job_type = 'refresh'
 			ORDER BY j.created_at DESC LIMIT 1
 		) j ON true
+		LEFT JOIN LATERAL (
+			SELECT j.parameters->>'artifact_id' AS artifact_id
+			FROM jobs j
+			WHERE j.device_id = dep.device_id AND j.job_type = 'install'
+			  AND j.state = 'completed'
+			ORDER BY j.created_at DESC LIMIT 1
+		) last_install ON true
 		ORDER BY COALESCE(ir.provisioning_expiry_at, dep.next_refresh_due_at)`)
 }
