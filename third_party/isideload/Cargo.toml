@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["examples/minimal","examples/signonly","examples/wireless","examples/p12export","isideload"]
+members = ["examples/minimal","examples/signonly","examples/wireless","examples/p12export","examples/appids","isideload"]
 default-members = ["isideload"]
