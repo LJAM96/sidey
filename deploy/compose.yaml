@@ -108,11 +108,10 @@ services:
       SIDEY_STATE_RUNTIME_DIR: /run/sidey/signing-state
       SIDEY_ENROLMENT_TOKEN: ${SIDEY_SIGNING_WORKER_TOKEN:-}
       SIDEY_IMPORT_STATE_DIR: ${SIDEY_SIGNING_IMPORT_DIR:-}
-      SIDEY_2FA_CODE_FILE: /2fa/2fa-code.txt
+      SIDEY_2FA_CODE_FILE: /var/lib/sidey/signing-worker/2fa-code.txt
     volumes:
       - sidey-signing-state:/var/lib/sidey/signing-worker
       - /run/sidey:/run/sidey
-      - /var/lib/sidey/2fa:/2fa
     # Memory-backed runtime dir: signonly decrypts the isideload private key
     # and anisette state here while a signing job runs. tmpfs means plaintext
     # is never touched to disk and is wiped when the container stops/crashes.
