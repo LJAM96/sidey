@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"sidey/internal/artifacts"
 	"sidey/internal/audit"
+	"sidey/internal/jobs"
 )
 
 type updateAppleCredentialsRequest struct {
