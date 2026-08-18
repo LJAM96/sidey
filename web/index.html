@@ -2066,16 +2066,21 @@ function scan2FA(jobsRows) {
   const strip = document.getElementById("twofaStrip");
   if (!strip) return;
   const now = Date.now();
-  const hit = (jobsRows || []).find(j =>
+  const active = (jobsRows || []).find(j =>
+    (j.job_type === "sign" || j.job_type === "refresh") &&
+    j.state !== "completed" && j.state !== "dead" &&
+    (now - new Date(j.updated_at || j.created_at).getTime()) < 10 * 60 * 1000
+  );
+  const authFail = (jobsRows || []).find(j =>
     (j.error_category === "auth" || /verification code|2fa|two.?factor/i.test(j.error_details || "")) &&
     j.state !== "completed" &&
     (now - new Date(j.updated_at || j.created_at).getTime()) < 10 * 60 * 1000
   );
-  strip.style.display = hit ? "block" : "none";
-  if (hit) {
-    document.getElementById("twofaMsg").textContent =
-      (hit.state === "dead" ? "Previous sign-in failed — Apple wants a verification code" : "Apple wants a verification code");
-  }
+  if (!active && !authFail) { strip.style.display = "none"; return; }
+  strip.style.display = "block";
+  document.getElementById("twofaMsg").textContent = authFail
+    ? "Apple wants a verification code"
+    : "Signing in progress — Apple may push a code to your phone";
 }
 
 function renderDeviceApps(refRows, devRows) {
