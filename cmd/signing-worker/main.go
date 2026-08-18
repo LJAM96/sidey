@@ -53,6 +53,7 @@ type config struct {
 	stateRuntime  string
 	signonlyBin   string
 	p12exportBin  string
+	appidsBin     string
 	anisetteURL   string
 	appleID       string
 	applePassword string
@@ -77,6 +78,7 @@ func main() {
 		stateRuntime:  envOr("SIDEY_STATE_RUNTIME_DIR", defaultStateRuntime),
 		signonlyBin:   envOr("SIDEY_SIGNONLY_BIN", "/usr/local/bin/signonly"),
 		p12exportBin:  envOr("SIDEY_P12EXPORT_BIN", "/usr/local/bin/p12export"),
+		appidsBin:     envOr("SIDEY_APPIDS_BIN", "/usr/local/bin/appids"),
 		anisetteURL:   envOr("SIDEY_ANISETTE_URL", defaultAnisetteURL),
 		appleID:       os.Getenv("SIDEY_APPLE_ID"),
 		applePassword: os.Getenv("SIDEY_APPLE_MAIN_PASSWORD"),
@@ -281,7 +283,7 @@ func getCredentials(cfg config, requestedAppleID string) (appleID, applePassword
 
 func claimAndRun(cfg config, agentKey string) {
 	body, _ := json.Marshal(map[string]any{
-		"job_types": []string{"sign", "export_p12"},
+		"job_types": []string{"sign", "export_p12", "appids"},
 		"limit":     1,
 	})
 	req, err := http.NewRequest("POST", cfg.controlPlane+"/api/v1/jobs/claim", bytes.NewReader(body))
@@ -318,6 +320,8 @@ func dispatchJob(cfg config, agentKey, jobID, jobType string, deviceID *string, 
 		runSignJob(cfg, agentKey, jobID, deviceID, rawParams)
 	case "export_p12":
 		runExportP12Job(cfg, agentKey, jobID, rawParams)
+	case "appids":
+		runAppIDsJob(cfg, agentKey, jobID, rawParams)
 	default:
 		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
 			"signing worker does not handle job type "+jobType, nil)
@@ -598,6 +602,151 @@ type p12exportResult struct {
 	TeamID      string `json:"team_id"`
 	MachineName string `json:"machine_name"`
 	MachineID   string `json:"machine_id"`
+}
+
+type appidsParams struct {
+	Action  string   `json:"action"`
+	AppleID string   `json:"apple_id"`
+	AppIDs  []string `json:"app_ids"`
+}
+
+type appIDsApp struct {
+	AppIDID    string `json:"app_id_id"`
+	Identifier string `json:"identifier"`
+	Name       string `json:"name"`
+}
+
+type appIDsResult struct {
+	Status             string       `json:"status"`
+	Mode               string       `json:"mode"`
+	Deleted            []string     `json:"deleted"`
+	AppIDs             []appIDsApp  `json:"app_ids"`
+	MaxQuantity        *int64       `json:"max_quantity"`
+	AvailableQuantity  *int64       `json:"available_quantity"`
+	Error              string       `json:"error"`
+	Category           string       `json:"category"`
+}
+
+func runAppIDsJob(cfg config, agentKey, jobID string, rawParams json.RawMessage) {
+	progress := 5
+	postJobStatus(cfg, agentKey, jobID, "in_progress", &progress, "", "", nil)
+
+	var params appidsParams
+	if err := json.Unmarshal(rawParams, &params); err != nil {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
+			"appids job parameters malformed: "+err.Error(), nil)
+		return
+	}
+	if params.Action != "list" && params.Action != "delete" {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
+			`appids action must be "list" or "delete"`, nil)
+		return
+	}
+	if params.Action == "delete" && len(params.AppIDs) == 0 {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
+			"appids delete requires at least one app_id_id", nil)
+		return
+	}
+
+	appleID, applePassword := getCredentials(cfg, params.AppleID)
+	if appleID == "" || applePassword == "" {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
+			"no Apple credentials configured for appids", nil)
+		return
+	}
+	log.Printf("job %s: appids %s for %s (%d ids)", jobID, params.Action, appleID, len(params.AppIDs))
+
+	if err := os.MkdirAll(cfg.stateRuntime, 0o700); err != nil {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other", err.Error(), nil)
+		return
+	}
+	if err := decryptState(cfg.agentStateDir, cfg.stateRuntime); err != nil {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "certificate",
+			"state decrypt failed: "+err.Error(), nil)
+		return
+	}
+
+	result, err := runAppIDs(cfg, appleID, applePassword, params.Action, params.AppIDs)
+	if err != nil {
+		category := "other"
+		details := err.Error()
+		if result != nil && result.Category != "" {
+			category = result.Category
+		}
+		if result != nil && result.Error != "" {
+			details = result.Error
+		}
+		if len(details) > maxErrorDetails {
+			details = details[:maxErrorDetails]
+		}
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, category, details, nil)
+		encryptState(cfg.stateRuntime, cfg.agentStateDir)
+		return
+	}
+
+	encryptState(cfg.stateRuntime, cfg.agentStateDir)
+
+	summary := map[string]any{
+		"mode":                result.Mode,
+		"deleted":             result.Deleted,
+		"app_ids":             result.AppIDs,
+		"max_quantity":        result.MaxQuantity,
+		"available_quantity":  result.AvailableQuantity,
+	}
+	postJobStatus(cfg, agentKey, jobID, "completed", nil, "", "", summary)
+}
+
+func runAppIDs(cfg config, appleID, applePassword string, action string, appIDs []string) (*appIDsResult, error) {
+	args := []string{appleID, action}
+	args = append(args, appIDs...)
+	cmd := exec.Command(cfg.appidsBin, args...)
+	cmd.Env = append(os.Environ(),
+		"SIDEY_APPLE_MAIN_PASSWORD="+applePassword,
+		"SIDEY_ISIDELOAD_STATE="+cfg.stateRuntime,
+		"ANISETTE_URL="+cfg.anisetteURL,
+		"SIGNONLY_2FA_CODE_FILE="+cfg.codeFile,
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		res := parseAppIDs(stdout.String())
+		if err != nil {
+			if res == nil {
+				res = &appIDsResult{Category: "other", Error: strings.TrimSpace(stderr.String())}
+			}
+			if res.Error == "" {
+				res.Error = err.Error()
+			}
+			return res, fmt.Errorf("appids failed: %s", res.Error)
+		}
+		if res == nil {
+			return nil, errors.New("appids produced no JSON result")
+		}
+		if res.Status != "ok" {
+			return res, fmt.Errorf("appids error: %s", res.Error)
+		}
+		return res, nil
+	case <-time.After(jobTimeout):
+		cmd.Process.Kill()
+		return &appIDsResult{Category: "timeout"}, errors.New("appids timed out")
+	}
+}
+
+func parseAppIDs(stdout string) *appIDsResult {
+	var res appIDsResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		return nil
+	}
+	return &res
 }
 
 func runP12export(cfg config, appleID, applePassword, machineName, outputP12 string) (*p12exportResult, error) {

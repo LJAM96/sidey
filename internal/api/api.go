@@ -85,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("POST /api/v1/admin/apple-accounts/credentials", s.admin(s.handleUpdateAppleCredentials))
 	mux.Handle("POST /api/v1/admin/apple-accounts/2fa-code", s.admin(s.handleSubmit2FACode))
+	mux.Handle("POST /api/v1/admin/apple-app-ids", s.admin(s.handleManageAppIDs))
 	mux.Handle("DELETE /api/v1/admin/apple-accounts/{id}", s.admin(s.handleDeleteAppleAccount))
 	mux.Handle("GET /api/v1/admin/apple-accounts/{id}/certificate/download", s.admin(s.handleAppleCertificateDownload))
 	mux.Handle("POST /api/v1/admin/deploy", s.admin(s.handleAdminDeploy))

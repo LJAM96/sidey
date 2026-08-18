@@ -564,6 +564,7 @@
       <span>Apple Account</span>
       <div style="display:flex; gap:8px; align-items:center;">
         <span id="accountStateBadge" class="badge badge-neutral">Signed out</span>
+        <button class="btn btn-sm" onclick="openAppIdsModal()" title="List or delete App IDs registered on Apple's developer portal (free teams cap at 10)">Manage App IDs</button>
         <button class="btn btn-sm btn-primary" onclick="openAddAccountModal()">Connect Apple Account</button>
       </div>
     </div>
@@ -827,6 +828,35 @@
     </div>
   </section>
 </main>
+
+<!-- Manage App IDs Modal -->
+<div id="appIdsModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(4px);">
+  <div style="background:var(--surface); border:1px solid var(--surface-border); border-radius:var(--radius-lg); width:100%; max-width:620px; padding:24px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <div style="font-size:16px; font-weight:600;">App IDs on Apple Developer Portal</div>
+      <button style="background:none; border:none; color:var(--text-muted); font-size:22px; cursor:pointer;" onclick="closeAppIdsModal()">&times;</button>
+    </div>
+    <p style="font-size:12.5px; color:var(--text-secondary); line-height:1.5; margin-bottom:12px;">
+      Free Apple accounts can register up to 10 App IDs. Each sideloaded app (plus its extensions) uses one. Deleting an App ID frees a slot — only delete IDs you no longer need, and never the LiveContainer one while it's installed.
+    </p>
+    <div id="appIdsQuota" class="text-muted" style="font-size:12px; margin-bottom:10px;"></div>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr><th>Bundle Identifier</th><th>Name</th><th>App ID</th><th></th></tr>
+        </thead>
+        <tbody id="appIdsList">
+          <tr><td colspan="4" class="text-muted" style="text-align:center;">Click "↻ Refresh List" to load App IDs.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="appIdsStatus" class="text-muted" style="font-size:12px; margin-top:10px;"></div>
+    <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:14px;">
+      <button class="btn" onclick="closeAppIdsModal()">Close</button>
+      <button class="btn btn-primary" id="appIdsRefreshBtn" onclick="refreshAppIdsList()">↻ Refresh List</button>
+    </div>
+  </div>
+</div>
 
 <!-- Add Device Modal -->
 <div id="addDeviceModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(4px);">
@@ -2138,6 +2168,115 @@ function renderDeviceApps(refRows, devRows) {
     </div>`;
   }
   el.innerHTML = html;
+}
+
+function openAppIdsModal() {
+  document.getElementById("appIdsModal").style.display = "flex";
+  refreshAppIdsList();
+}
+function closeAppIdsModal() {
+  document.getElementById("appIdsModal").style.display = "none";
+}
+
+function waitForJob(jobId, timeoutMs = 180000) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = async () => {
+      try {
+        const res = await apiFetch("/api/v1/dashboard/jobs");
+        if (!res.ok) throw new Error(await res.text());
+        const rows = (await res.json()).rows || [];
+        const row = rows.find(j => j.id === jobId);
+        if (row && (row.state === "completed" || row.state === "failed" || row.state === "dead")) {
+          resolve(row);
+          return;
+        }
+      } catch (e) { /* transient — keep polling */ }
+      if (Date.now() - started > timeoutMs) {
+        reject(new Error("job timed out"));
+        return;
+      }
+      setTimeout(tick, 2000);
+    };
+    tick();
+  });
+}
+
+function renderAppIdsResult(jobRow) {
+  const statusEl = document.getElementById("appIdsStatus");
+  const quotaEl = document.getElementById("appIdsQuota");
+  const bodyEl = document.getElementById("appIdsList");
+  if (!jobRow || jobRow.state !== "completed") {
+    statusEl.textContent = jobRow ? `Failed: ${jobRow.error_details || jobRow.error_category || "unknown error"}` : "Something went wrong";
+    statusEl.style.color = "var(--error)";
+    return;
+  }
+  statusEl.textContent = "";
+  const res = jobRow.result || {};
+  const max = res.max_quantity;
+  const avail = res.available_quantity;
+  if (Number.isFinite(max) && Number.isFinite(avail)) {
+    quotaEl.textContent = `Quota: ${max - avail} of ${max} App IDs used · ${avail} free`;
+  } else {
+    quotaEl.textContent = "";
+  }
+  const apps = res.app_ids || [];
+  bodyEl.innerHTML = apps.length === 0
+    ? `<tr><td colspan="4" class="text-muted" style="text-align:center;">No App IDs registered.</td></tr>`
+    : apps.map(a => `
+        <tr>
+          <td class="mono" style="font-size:12px;">${escapeHtml(a.identifier || "—")}</td>
+          <td>${escapeHtml(a.name || "—")}</td>
+          <td class="mono" style="font-size:10px; color:var(--text-muted);" title="${escapeHtml(a.app_id_id || "")}">${escapeHtml((a.app_id_id || "").slice(0, 14))}…</td>
+          <td style="text-align:right;">
+            <button class="btn btn-sm btn-danger" onclick="deleteAppId('${escapeHtml(a.app_id_id || "")}','${escapeHtml(a.identifier || "")}')">Delete</button>
+          </td>
+        </tr>`).join("");
+}
+
+async function refreshAppIdsList() {
+  const btn = document.getElementById("appIdsRefreshBtn");
+  const statusEl = document.getElementById("appIdsStatus");
+  btn.disabled = true;
+  statusEl.textContent = "Requesting App ID list from Apple…";
+  statusEl.style.color = "var(--text-muted)";
+  try {
+    const res = await apiFetch("/api/v1/admin/apple-app-ids", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "list", apple_id: "" })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const { job_id } = await res.json();
+    const jobRow = await waitForJob(job_id);
+    renderAppIdsResult(jobRow);
+  } catch (err) {
+    statusEl.textContent = "Failed: " + err.message;
+    statusEl.style.color = "var(--error)";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteAppId(appIdId, identifier) {
+  if (!confirm(`Delete App ID "${identifier}" (${appIdId})? This frees a quota slot. Only safe if the app is uninstalled everywhere.`)) return;
+  const statusEl = document.getElementById("appIdsStatus");
+  statusEl.textContent = "Deleting App ID…";
+  statusEl.style.color = "var(--text-muted)";
+  try {
+    const res = await apiFetch("/api/v1/admin/apple-app-ids", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete", apple_id: "", app_ids: [appIdId] })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const { job_id } = await res.json();
+    await waitForJob(job_id);
+    refreshAppIdsList();
+  } catch (err) {
+    statusEl.textContent = "Failed: " + err.message;
+    statusEl.style.color = "var(--error)";
+  }
 }
 
 async function fetchDashboard() {

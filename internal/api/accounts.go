@@ -24,6 +24,54 @@ type updateAppleCredentialsRequest struct {
 	TwoFactorCode string `json:"two_factor_code"`
 }
 
+// handleManageAppIDs creates an appids job (list or delete) for the signing
+// worker, which lists/deletes the account's registered App IDs on Apple's
+// developer portal using the decrypted session — fully GUI-driven.
+func (s *Server) handleManageAppIDs(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action  string   `json:"action"`
+		AppleID string   `json:"apple_id"`
+		AppIDs  []string `json:"app_ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	req.Action = strings.TrimSpace(req.Action)
+	req.AppleID = strings.TrimSpace(req.AppleID)
+	if req.Action != "list" && req.Action != "delete" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": `action must be "list" or "delete"`})
+		return
+	}
+	if req.Action == "delete" && len(req.AppIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "app_ids required for delete"})
+		return
+	}
+	params, err := json.Marshal(map[string]any{"action": req.Action, "apple_id": req.AppleID, "app_ids": req.AppIDs})
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "parameter encoding failed")
+		return
+	}
+	key := "appids:" + req.Action
+	if req.Action == "delete" {
+		key += ":" + strings.Join(req.AppIDs, "+")
+	}
+	job, err := s.jobs.Create(r.Context(), "admin", jobs.CreateRequest{
+		JobType:        jobs.JobTypeAppIDs,
+		Parameters:     params,
+		IdempotencyKey: key,
+	})
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "failed to create appids job")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"job_id":  job.ID,
+		"state":   job.State,
+		"job_type": job.JobType,
+	})
+}
+
 // handleSubmit2FACode stores a verification code for the signing worker's
 // next 2FA prompt. GUI-only flow: the dashboard shows the code field whenever
 // a signing/refresh job reports an auth error, and the user pastes the code

@@ -63,6 +63,10 @@ const (
 	// development certificate + private key as a PKCS#12 archive. It carries
 	// no device and is served back to the control plane in the job result.
 	JobTypeExportP12 = "export_p12"
+
+	// JobTypeAppIDs asks the signing worker to list or delete the account's
+	// registered App IDs on the Apple developer portal (GUI-managed quota).
+	JobTypeAppIDs = "appids"
 	// JobTypeLiveContainerPush requests the device service push a guest IPA
 	// (or certificate p12) file directly into the LiveContainer app container
 	// on a device, typically over the wireless RSD tunnel. It is a device-
@@ -260,7 +264,7 @@ func nullableJobTypes(types []string) any {
 // device-less certificate export job are global.
 func globalTypes(types []string) bool {
 	for _, t := range types {
-		if t != JobTypeSign && t != JobTypeExportP12 {
+		if t != JobTypeSign && t != JobTypeExportP12 && t != JobTypeAppIDs {
 			return false
 		}
 	}
