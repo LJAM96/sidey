@@ -142,8 +142,12 @@ func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
 			ORDER BY j.created_at DESC LIMIT 1
 		) last_install ON true
 		LEFT JOIN LATERAL (
-			SELECT filename, bundle_identifier FROM artifacts
-			WHERE id = last_install.artifact_id::uuid
+			SELECT a.filename, a.bundle_identifier
+			FROM artifacts a
+			WHERE a.id = (
+				SELECT sa.source_artifact_id FROM signed_artifacts sa
+				WHERE sa.id = NULLIF(last_install.artifact_id, '')::uuid
+			)
 		) app ON true
 		ORDER BY COALESCE(ir.provisioning_expiry_at, dep.next_refresh_due_at)`)
 }
