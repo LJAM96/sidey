@@ -24,6 +24,38 @@ type updateAppleCredentialsRequest struct {
 	TwoFactorCode string `json:"two_factor_code"`
 }
 
+// handleSubmit2FACode stores a verification code for the signing worker's
+// next 2FA prompt. GUI-only flow: the dashboard shows the code field whenever
+// a signing/refresh job reports an auth error, and the user pastes the code
+// from their phone without re-entering credentials.
+func (s *Server) handleSubmit2FACode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TwoFactorCode string `json:"two_factor_code"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	req.TwoFactorCode = strings.TrimSpace(req.TwoFactorCode)
+	if req.TwoFactorCode == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "two_factor_code is required"})
+		return
+	}
+	codePaths := []string{
+		"/tmp/opencode/2fa-code.txt",
+		"/var/lib/sidey/signing-worker/2fa-code.txt",
+		"/run/sidey/signing-state/2fa-code.txt",
+	}
+	for _, cp := range codePaths {
+		if dir := filepath.Dir(cp); dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
+		}
+		_ = os.WriteFile(cp, []byte(req.TwoFactorCode+"\n"), 0o644)
+	}
+	s.audit.Record(r.Context(), "admin", "apple_account.2fa_submitted")
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
 // handleUpdateAppleCredentials saves Apple credentials for the signing worker
 // and updates the apple_accounts state.
 func (s *Server) handleUpdateAppleCredentials(w http.ResponseWriter, r *http.Request) {

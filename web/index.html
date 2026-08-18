@@ -466,6 +466,79 @@
     color: var(--text-secondary);
   }
   .guide-box strong { color: var(--text-primary); }
+
+  .device-card {
+    background: var(--surface-elevated);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+  }
+  .device-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+  .device-card-name { font-weight: 600; font-size: 14px; margin-right: 8px; }
+  .app-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1.2fr 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 4px;
+    border-top: 1px solid var(--surface-border);
+    font-size: 13px;
+  }
+  .app-row-head {
+    border-top: none;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    padding-bottom: 2px;
+  }
+  @media (max-width: 760px) {
+    .app-row { grid-template-columns: 1fr auto; }
+    .app-row-head { display: none; }
+  }
+  details {
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    background: var(--bg);
+  }
+  details[open] { padding-bottom: 14px; }
+  summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    font-weight: 500;
+    user-select: none;
+  }
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-md);
+    padding: 12px 18px;
+    font-size: 13px;
+    z-index: 200;
+    box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: all 0.2s ease;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  #twofaStrip {
+    border: 1px solid var(--warning);
+    background: var(--warning-bg);
+    margin-top: 14px;
+  }
 </style>
 </head>
 <body>
@@ -485,24 +558,185 @@
 </header>
 
 <main>
-  <!-- Sideload Hub & Apple Accounts -->
-  <div class="grid-2">
-    <!-- Quick Sideload Panel -->
-    <div class="card">
-      <div class="card-title">
-        <span>Sideload Application</span>
+  <!-- Apple Account -->
+  <section class="card" style="border-left: 3px solid var(--accent);">
+    <div class="card-title">
+      <span>Apple Account</span>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <span id="accountStateBadge" class="badge badge-neutral">Signed out</span>
+        <button class="btn btn-sm btn-primary" onclick="openAddAccountModal()">Connect Apple Account</button>
+      </div>
+    </div>
+
+    <div id="accountsList" style="display:flex; flex-direction:column; gap:12px;">
+      <div class="text-muted" style="font-size:13px;">No Apple Account connected yet. Click "Connect Apple Account" to sign in.</div>
+    </div>
+
+    <div id="twofaStrip" class="card" style="display:none; padding:14px 16px;">
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:space-between;">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <span style="font-size:20px;">🔐</span>
+          <div>
+            <div style="font-weight:600; font-size:13.5px;" id="twofaMsg">Apple wants a verification code</div>
+            <div class="text-muted" style="font-size:12px; margin-top:2px;">A 6-digit code was just pushed to your trusted device (or SMS). Enter it below — the active job will pick it up automatically.</div>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="twofaInput" class="input-field mono" style="width:130px;" placeholder="6 digits" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+          <button class="btn btn-primary" onclick="submit2FACode()">Send Code</button>
+        </div>
+      </div>
+    </div>
+
+    <details style="margin-top:14px;">
+      <summary>How signing & 2FA works</summary>
+      <div class="guide-box" style="margin-top:10px;">
+        <ul style="margin-left: 18px; display:flex; flex-direction:column; gap:6px;">
+          <li><strong>Connect account</strong>: Apple ID + password. Free Apple accounts sign up to 10 apps (bundle IDs) at a time.</li>
+          <li><strong>2FA</strong>: When a signing job needs a code, Apple pushes it to your phone — this page shows a code box right here, and the job resumes as soon as you paste it in.</li>
+          <li><strong>LiveContainer</strong>: run unlimited guest apps inside one container, using only 1 of your 10 App IDs.</li>
+        </ul>
+      </div>
+    </details>
+  </section>
+
+  <!-- My Devices -->
+  <section class="card">
+    <div class="card-title">
+      <span>My Devices &amp; Sideloaded Apps</span>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <span id="deviceCountBadge" class="badge badge-neutral">0 Devices</span>
+        <button class="btn btn-sm btn-primary" onclick="openAddDeviceModal()">+ Add Device</button>
+      </div>
+    </div>
+
+    <div id="deviceAppsList" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="text-muted" style="font-size:13px; padding:8px 0;">Loading…</div>
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:12px; margin-top:18px;">
+      <details>
+        <summary>📱 My Phone — LiveContainer &amp; guest apps <span id="myPhoneSub" class="text-muted" style="font-size:11px;"></span></summary>
+        <div id="myPhoneBody" style="display:flex; flex-direction:column; gap:10px; padding-top:8px;">
+          <div class="text-muted" style="text-align:center;">Loading…</div>
+        </div>
+      </details>
+
+      <details>
+        <summary>App inventory on devices (installed apps)</summary>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding-top:10px;">
+          <select id="installedAppsDeviceSelect" class="select-input" style="max-width:240px;">
+            <option value="">Select device...</option>
+          </select>
+          <button class="btn btn-sm" onclick="refreshInstalledApps()">↻ Refresh Inventory</button>
+          <span id="installedAppsStatus" class="text-muted" style="font-size:12px;">Not loaded</span>
+        </div>
+        <div class="table-container" style="margin-top:10px;">
+          <table>
+            <thead>
+              <tr><th>App</th><th>Bundle ID</th><th>Version</th><th>Type</th></tr>
+            </thead>
+            <tbody id="installedAppsList">
+              <tr><td colspan="4" class="text-muted" style="text-align:center;">Click "↻ Refresh Inventory" to query the phone.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      <details>
+        <summary>Refresh calendar (profile expiries &amp; auto-renews)</summary>
+        <div class="table-container" style="margin-top:10px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Device</th><th>⚠️ Days Left</th><th>Profile Expiry</th><th>Next Refresh Due</th>
+                <th>Last Result</th><th>Last Refresh</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="refreshList">
+              <tr><td colspan="7" class="text-muted" style="text-align:center;">Loading deployments...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      <details>
+        <summary>Device registration &amp; pairing guide</summary>
+        <div class="table-container" style="margin-top:10px;">
+          <table id="devicesTable">
+            <thead>
+              <tr>
+                <th>Device Name</th><th>Platform</th><th>Model</th><th>OS Version</th>
+                <th>UDID</th><th>Pairing Status</th><th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="devicesList">
+              <tr><td colspan="7" class="text-muted" style="text-align:center;">Loading devices...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="guide-box" style="margin-top:12px;">
+          <strong>Connecting a new device:</strong>
+          <ul style="margin-left: 18px; margin-top: 6px;">
+            <li><strong>Apple TV (tvOS)</strong>: Click <strong>+ Add Device</strong> above. The device will be ready for tvOS sideloading over the Tailnet.</li>
+            <li><strong>iPhone / iPad (Wireless RSD)</strong>: Ensure device is on the Tailnet (or Wi-Fi), and pair once over USB with: <code>pymobiledevice3 lockdown remotepairing --pair</code>. The <code>sidey-wireless-tunnel</code> service connects automatically.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary>Job activity (background sign / install / refresh)</summary>
+        <div class="table-container" style="margin-top:10px;">
+          <table>
+            <thead>
+              <tr><th>Job ID</th><th>Type</th><th>State</th><th>Attempt</th><th>Created</th><th>Details / Errors</th></tr>
+            </thead>
+            <tbody id="jobsList">
+              <tr><td colspan="6" class="text-muted" style="text-align:center;">Loading jobs...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- App Store -->
+  <section class="card">
+    <div class="card-title">
+      <span>App Store</span>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button class="btn btn-sm" onclick="openLiveContainerModal()" title="Install the LiveContainer runtime on a device">⚡ Install LiveContainer</button>
+        <button class="btn btn-sm btn-primary" onclick="document.getElementById('sideloadPanel').style.display='block'; document.getElementById('ipaFileInput').click();" title="Install a local .ipa file">⬆️ Install .ipa</button>
+        <button class="btn btn-sm" onclick="openAddSourceModal()">+ Add Source / GitHub</button>
+        <button class="btn btn-sm" onclick="fetchStoreApps(true)">↻ Refresh Store</button>
+      </div>
+    </div>
+
+    <div class="store-toolbar">
+      <input id="storeSearch" type="text" class="input-field" placeholder="Search apps (e.g. Delta, LiveContainer, UTM, PPSSPP)..." style="max-width:320px;" oninput="filterStoreApps()">
+      <select id="storeSourceFilter" class="select-input" style="max-width:220px;" onchange="filterStoreApps()">
+        <option value="all">All Sources</option>
+      </select>
+      <span id="storeAppCount" class="text-muted" style="font-size:12px;">Loading catalog...</span>
+    </div>
+
+    <div id="storeGrid" class="store-grid">
+      <div class="text-muted" style="grid-column: 1/-1; padding:20px; text-align:center;">Fetching catalog from sources...</div>
+    </div>
+
+    <!-- Hidden sideload wizard: shown when a store app or .ipa is installed -->
+    <div id="sideloadPanel" style="display:none; margin-top:18px; border-top:1px dashed var(--surface-border); padding-top:18px;">
+      <div class="card-title" style="margin-bottom:12px;">
+        <span>Install</span>
         <span id="sideloadStatusBadge" class="badge badge-neutral">Ready</span>
       </div>
-
       <input type="file" id="ipaFileInput" accept=".ipa" style="display: none;">
-      <div id="dropZone" class="drop-zone">
+      <div id="dropZone" class="drop-zone" style="margin-bottom:14px;">
         <div class="drop-icon">📦</div>
         <div id="fileLabel" class="drop-text">Click or Drag & Drop .ipa file here</div>
         <div class="drop-hint">Accepts standard iOS & tvOS IPA archives</div>
       </div>
-
-      <!-- Installation Target Mode Prompt -->
-      <div class="mode-selector-box">
+      <div class="mode-selector-box" style="margin-bottom:14px;">
         <label class="mode-option">
           <input type="radio" name="deployMode" value="native" checked onchange="handleModeChange()">
           <div>
@@ -513,7 +747,6 @@
             <div class="mode-desc">Signs with your Apple Developer account. Appears natively on your iOS / tvOS Home Screen.</div>
           </div>
         </label>
-
         <label class="mode-option">
           <input type="radio" name="deployMode" value="livecontainer" onchange="handleModeChange()">
           <div>
@@ -525,7 +758,6 @@
           </div>
         </label>
       </div>
-
       <div class="form-row">
         <div>
           <label class="input-label">Target Device</label>
@@ -540,12 +772,9 @@
           </select>
         </div>
       </div>
-
       <div style="margin-top: 14px; display:flex; justify-content:flex-end;">
         <button id="sideloadBtn" class="btn btn-primary" style="width:100%; justify-content:center;" disabled>Sign & Sideload to Device</button>
       </div>
-
-      <!-- Sideloading Progress Box -->
       <div id="progressTracker" class="progress-tracker">
         <div class="step-row" id="step1">
           <div class="step-status" id="step1Status">1</div>
@@ -568,208 +797,33 @@
       </div>
     </div>
 
-    <!-- Apple Developer Accounts Pool -->
-    <div class="card">
-      <div class="card-title">
-        <span>Apple Developer Accounts</span>
-        <div style="display:flex; gap:8px;">
-          <button class="btn btn-sm" onclick="openLiveContainerModal()">⚡ Install LiveContainer</button>
-          <button class="btn btn-sm btn-primary" onclick="openAddAccountModal()">+ Add Account</button>
+    <div style="display:flex; flex-direction:column; gap:12px; margin-top:18px;">
+      <details>
+        <summary>Uploaded IPAs (repository &amp; quarantine)</summary>
+        <div class="table-container" style="margin-top:10px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Filename</th><th>Bundle Identifier</th><th>Version</th><th>Platform</th>
+                <th>Quarantine State</th><th>SHA256</th><th>Actions</th><th>Install</th>
+              </tr>
+            </thead>
+            <tbody id="artifactsList">
+              <tr><td colspan="8" class="text-muted" style="text-align:center;">Loading artifacts...</td></tr>
+            </tbody>
+          </table>
         </div>
-      </div>
-
-      <div id="accountsList" style="display:flex; flex-direction:column; gap:12px;">
-        <div class="text-muted" style="font-size:13px;">Loading accounts...</div>
-      </div>
-
-      <div class="guide-box" style="margin-top:14px;">
-        <strong>Bypass 3-App Limit:</strong>
-        <ul style="margin-left: 18px; margin-top: 4px;">
-          <li><strong>Multi-Account</strong>: Add secondary Apple IDs above (3 native apps per account).</li>
-          <li><strong>LiveContainer</strong>: Click <strong>⚡ Install LiveContainer</strong> to run unlimited guest apps within a single container without using any extra Apple slots!</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-
-  <!-- App Store (AltStore Sources & GitHub Releases) -->
-  <section class="card">
-    <div class="card-title">
-      <span>App Catalog & Store (AltStore & GitHub Sources)</span>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <button class="btn btn-sm" onclick="copySourceURL()" title="Copy AltStore/LiveContainer repository JSON URL">📋 Copy Store JSON</button>
-        <button class="btn btn-sm" onclick="addAltStoreSource()" title="Open AltStore with this source">➕ Add to AltStore</button>
-        <button class="btn btn-sm" onclick="addSideStoreSource()" title="Open SideStore with this source">➕ Add to SideStore</button>
-        <button class="btn btn-sm" onclick="addLiveContainerSource()" title="Open LiveContainer with this source">➕ Add to LiveContainer</button>
-        <button class="btn btn-sm" onclick="setPublicBaseURL()" title="Set the URL the phone uses to reach this store">🌐 Public URL</button>
-        <button class="btn btn-sm" onclick="fetchStoreApps(true)">↻ Refresh Store</button>
-        <button class="btn btn-sm btn-primary" onclick="openAddSourceModal()">+ Add Source / GitHub</button>
-      </div>
-    </div>
-
-    <div class="store-toolbar">
-      <input id="storeSearch" type="text" class="input-field" placeholder="Search apps (e.g. Delta, LiveContainer, UTM, PPSSPP)..." style="max-width:320px;" oninput="filterStoreApps()">
-      <select id="storeSourceFilter" class="select-input" style="max-width:220px;" onchange="filterStoreApps()">
-        <option value="all">All Sources</option>
-      </select>
-      <span id="storeAppCount" class="text-muted" style="font-size:12px;">Loading catalog...</span>
-    </div>
-
-    <div id="storeGrid" class="store-grid">
-      <div class="text-muted" style="grid-column: 1/-1; padding:20px; text-align:center;">Fetching catalog from sources...</div>
-    </div>
-  </section>
-
-  <!-- Connected Devices Section -->
-  <section class="card">
-    <div class="card-title">
-      <span>Connected Devices Fleet</span>
-      <div style="display:flex; gap:10px; align-items:center;">
-        <span id="deviceCountBadge" class="badge badge-neutral">0 Devices</span>
-        <button class="btn btn-sm btn-primary" onclick="openAddDeviceModal()">+ Add Device</button>
-      </div>
-    </div>
-    <div class="table-container">
-      <table id="devicesTable">
-        <thead>
-          <tr>
-            <th>Device Name</th>
-            <th>Platform</th>
-            <th>Model</th>
-            <th>OS Version</th>
-            <th>UDID</th>
-            <th>Pairing Status</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody id="devicesList">
-          <tr><td colspan="7" class="text-muted" style="text-align:center;">Loading devices...</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div class="guide-box">
-      <strong>How to connect a new device:</strong>
-      <ul style="margin-left: 18px; margin-top: 6px;">
-        <li><strong>Apple TV (tvOS)</strong>: Click <strong>+ Add Device</strong> above. The device will be ready for tvOS sideloading over the Tailnet.</li>
-        <li><strong>iPhone / iPad (Wireless RSD)</strong>: Ensure device is on the Tailnet (or Wi-Fi), and pair once over USB with: <code>pymobiledevice3 lockdown remotepairing --pair</code>. The <code>sidey-wireless-tunnel</code> service connects automatically.</li>
-      </ul>
-    </div>
-  </section>
-
-  <!-- Live Job Activity -->
-  <section class="card">
-    <div class="card-title">
-      <span>Job Queue & Intent Execution</span>
-      <span id="activeJobsBadge" class="badge badge-neutral">0 Active</span>
-    </div>
-    <div class="table-container">
-      <table>
-        <thead>
-          <tr>
-            <th>Job ID</th>
-            <th>Type</th>
-            <th>State</th>
-            <th>Attempt</th>
-            <th>Created</th>
-            <th>Details / Errors</th>
-          </tr>
-        </thead>
-        <tbody id="jobsList">
-          <tr><td colspan="6" class="text-muted" style="text-align:center;">Loading jobs...</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <!-- My Phone -->
-  <section class="card" style="border-left: 3px solid var(--accent);">
-    <div class="card-title">
-      <span>📱 My Phone</span>
-      <span id="myPhoneSub" class="text-muted" style="font-size:12px;">Loading…</span>
-    </div>
-    <div id="myPhoneBody" style="display:flex; flex-direction:column; gap:10px; padding-top:8px;">
-      <div class="text-muted" style="text-align:center;">Loading…</div>
-    </div>
-  </section>
-
-  <!-- Deployments & Auto-Refresh Calendar -->
-  <section class="card">
-    <div class="card-title">
-      <span>Deployments & 7-Day Auto-Refresh Calendar</span>
-    </div>
-    <div class="table-container">
-      <table>
-        <thead>
-          <tr>
-            <th>Device</th>
-            <th>⚠️ Days Left</th>
-            <th>Profile Expiry</th>
-            <th>Next Refresh Due</th>
-            <th>Last Result</th>
-            <th>Last Refresh</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody id="refreshList">
-          <tr><td colspan="7" class="text-muted" style="text-align:center;">Loading deployments...</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <!-- Installed Apps (LiveContainer) -->
-  <section class="card">
-    <div class="card-title">
-      <span>📱 Installed Apps on Phone</span>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <select id="installedAppsDeviceSelect" class="select-input" style="max-width:240px;">
-          <option value="">Select device...</option>
-        </select>
-        <button class="btn btn-sm" onclick="refreshInstalledApps()" title="Query the phone for installed system apps + LiveContainer guest apps">↻ Refresh Inventory</button>
-        <span id="installedAppsStatus" class="text-muted" style="font-size:12px;">Not loaded</span>
-      </div>
-    </div>
-    <div class="table-container">
-      <table>
-        <thead>
-          <tr>
-            <th>App</th>
-            <th>Bundle ID</th>
-            <th>Version</th>
-            <th>Type</th>
-          </tr>
-        </thead>
-        <tbody id="installedAppsList">
-          <tr><td colspan="4" class="text-muted" style="text-align:center;">Click "↻ Refresh Inventory" to query the phone.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <!-- Artifacts Explorer -->
-  <section class="card">
-    <div class="card-title">
-      <span>Applications & Artifacts</span>
-    </div>
-    <div class="table-container">
-      <table>
-        <thead>
-          <tr>
-            <th>Filename</th>
-            <th>Bundle Identifier</th>
-            <th>Version</th>
-            <th>Platform</th>
-            <th>Quarantine State</th>
-            <th>SHA256</th>
-            <th>Actions</th>
-            <th>Install</th>
-          </tr>
-        </thead>
-        <tbody id="artifactsList">
-          <tr><td colspan="8" class="text-muted" style="text-align:center;">Loading artifacts...</td></tr>
-        </tbody>
-      </table>
+      </details>
+      <details>
+        <summary>Store helpers &amp; URLs</summary>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; padding-top:10px;">
+          <button class="btn btn-sm" onclick="copySourceURL()">📋 Copy Store JSON</button>
+          <button class="btn btn-sm" onclick="addAltStoreSource()">➕ Add to AltStore</button>
+          <button class="btn btn-sm" onclick="addSideStoreSource()">➕ Add to SideStore</button>
+          <button class="btn btn-sm" onclick="addLiveContainerSource()">➕ Add to LiveContainer</button>
+          <button class="btn btn-sm" onclick="setPublicBaseURL()">🌐 Public URL</button>
+        </div>
+      </details>
     </div>
   </section>
 </main>
@@ -1972,6 +2026,115 @@ async function deleteDevice(devId, devName) {
 // -------------------------------------------------------------
 // Live Dashboard Polling
 // -------------------------------------------------------------
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+function showToast(msg) {
+  let t = document.getElementById("toast");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "toast";
+    t.className = "toast";
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 4500);
+}
+
+async function submit2FACode() {
+  const code = document.getElementById("twofaInput").value.trim();
+  if (!/^\d{6}$/.test(code)) { showToast("Enter the 6-digit code from your phone"); return; }
+  try {
+    const res = await apiFetch("/api/v1/admin/apple-accounts/2fa-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ two_factor_code: code })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    document.getElementById("twofaInput").value = "";
+    document.getElementById("twofaStrip").style.display = "none";
+    showToast("Code sent — the signing job is resuming");
+  } catch (err) {
+    showToast("Failed to send code: " + err.message);
+  }
+}
+
+function scan2FA(jobsRows) {
+  const strip = document.getElementById("twofaStrip");
+  if (!strip) return;
+  const now = Date.now();
+  const hit = (jobsRows || []).find(j =>
+    (j.error_category === "auth" || /verification code|2fa|two.?factor/i.test(j.error_details || "")) &&
+    j.state !== "completed" &&
+    (now - new Date(j.updated_at || j.created_at).getTime()) < 10 * 60 * 1000
+  );
+  strip.style.display = hit ? "block" : "none";
+  if (hit) {
+    document.getElementById("twofaMsg").textContent =
+      (hit.state === "dead" ? "Previous sign-in failed — Apple wants a verification code" : "Apple wants a verification code");
+  }
+}
+
+function renderDeviceApps(refRows, devRows) {
+  const el = document.getElementById("deviceAppsList");
+  if (!el) return;
+  if (!refRows || refRows.length === 0) {
+    el.innerHTML = `<div class="text-muted" style="font-size:13px; padding:8px 0;">No apps sideloaded yet — install something from the App Store below and it will appear here with its re-sign schedule.</div>`;
+    return;
+  }
+  const byUdid = {};
+  refRows.forEach(r => { (byUdid[r.udid] = byUdid[r.udid] || []).push(r); });
+  const devById = {};
+  (devRows || []).forEach(d => { devById[d.udid] = d; });
+  let html = "";
+  for (const udid of Object.keys(byUdid)) {
+    const d = devById[udid] || {};
+    const apps = byUdid[udid];
+    const deviceLabel = escapeHtml(d.device_name || apps[0].device_name || "Device");
+    html += `<div class="device-card">
+      <div class="device-card-head">
+        <div>
+          <span class="device-card-name">${deviceLabel}</span>
+          <span class="badge badge-neutral">${escapeHtml(d.platform || "ios")}</span>
+          <span class="text-muted" style="font-size:11px; margin-left:6px;">${escapeHtml(d.model || "")}</span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span class="badge ${d.pairing_status === "paired" ? "badge-success" : "badge-warning"}">${escapeHtml(d.pairing_status || "unknown")}</span>
+          ${d.id ? `<button class="btn btn-sm btn-danger" onclick="deleteDevice('${d.id}','${deviceLabel}')">&times;</button>` : ""}
+        </div>
+      </div>
+      <div class="app-row app-row-head">
+        <span>App</span><span>Signing Days Left</span><span>Profile Expiry</span><span>Refresh</span><span></span>
+      </div>
+      ${apps.map(a => {
+        const appLabel = escapeHtml((a.app_name || a.bundle_identifier || "App").replace(/\.ipa$/i, ""));
+        const refreshState = a.last_refresh_result === "ok" || a.last_refresh_result === "completed" ? "ok" : (a.last_refresh_result || "—");
+        const okBadge = refreshState === "ok" ? "badge-success" : refreshState === "failed" ? "badge-error" : "badge-neutral";
+        const reSignBtn = d.id && a.artifact_id
+          ? `<button class="btn btn-sm btn-primary" onclick="refreshSigning('${d.id}','${a.deployment_id}','${a.profile_expiry_at}','${a.artifact_id}')">Re-sign</button>`
+          : "";
+        return `<div class="app-row">
+          <div>
+            <strong>${appLabel}</strong>
+            <div class="mono" style="font-size:10px; color:var(--text-muted);">${escapeHtml(a.bundle_identifier || "")}</div>
+          </div>
+          <div>${daysLeftBadge(a.profile_expiry_at)}</div>
+          <div class="text-muted" style="font-size:12px;">${fmtDate(a.profile_expiry_at)}</div>
+          <div>
+            <span class="badge ${okBadge}">${refreshState}</span>
+            <span class="badge badge-neutral">${escapeHtml(a.refresh_job_state || "idle")}</span>
+          </div>
+          <div style="text-align:right;">${reSignBtn}</div>
+        </div>`;
+      }).join("")}
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
 async function fetchDashboard() {
   const connBadge = document.getElementById("connBadge");
   const connText = document.getElementById("connText");
@@ -2045,6 +2208,14 @@ async function fetchDashboard() {
       const accRows = accData.rows || [];
       liveAccounts = accRows;
 
+      const accBadge = document.getElementById("accountStateBadge");
+      if (accBadge) {
+        const authed = accRows.some(a => a.auth_state === "authenticated");
+        accBadge.textContent = accRows.length === 0 ? "Signed out" :
+          (authed ? `Signed in · ${accRows.length} account${accRows.length > 1 ? "s" : ""}` : `${accRows.length} account${accRows.length > 1 ? "s" : ""} · needs attention`);
+        accBadge.className = "badge " + (authed ? "badge-success" : (accRows.length === 0 ? "badge-neutral" : "badge-warning"));
+      }
+
       const currentAccountChoice = targetAccountSelect.value || "auto";
       targetAccountSelect.innerHTML = '<option value="auto">Auto (Choose account with open slots)</option>' +
         accRows.map(a => {
@@ -2099,8 +2270,7 @@ async function fetchDashboard() {
     if (jobsRes.ok) {
       const jobsData = await jobsRes.json();
       const jobsRows = jobsData.rows || [];
-      const activeCount = jobsRows.filter(j => j.state === "in_progress" || j.state === "pending" || j.state === "claimed").length;
-      document.getElementById("activeJobsBadge").textContent = `${activeCount} Active`;
+      scan2FA(jobsRows);
 
       const jobsList = document.getElementById("jobsList");
       if (jobsRows.length === 0) {
@@ -2140,8 +2310,9 @@ async function fetchDashboard() {
           </tr>
         `).join("");
       }
+      window.__myRefreshAll = refRows;
       window.__myPhoneRefresh = refRows.filter(r => r.udid && !(r.udid || '').startsWith('00000000'));
-      renderMyPhone(refRows, devicesRows);
+      renderMyPhone(refRows, liveDevices);
     }
 
     // 5. Artifacts
@@ -2177,6 +2348,7 @@ async function fetchDashboard() {
   }
   ensureMyPhoneInventory();
   renderMyPhone(window.__myPhoneRefresh || [], liveDevices || []);
+  renderDeviceApps(window.__myRefreshAll || [], liveDevices || []);
 }
 
 function selectDeviceForSideload(devId) {
