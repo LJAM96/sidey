@@ -24,6 +24,18 @@ import (
 // room for retries.
 const DefaultLead = 48 * time.Hour
 
+// expiryGuardLead is the hard safety net: if a profile is within this window
+// of expiry and has no active (non-dead) refresh job, a refresh is forced
+// regardless of the normal schedule. This prevents a broken refresh chain
+// from letting the profile expire entirely.
+const expiryGuardLead = 24 * time.Hour
+
+// refreshMaxAttempts is the number of retry attempts given to scheduler-
+// created refresh jobs. Higher than the default (5) because a refresh that
+// fails today may succeed tomorrow once the root cause (auth, quota, tunnel)
+// is resolved.
+const refreshMaxAttempts = 15
+
 type dueDeployment struct {
 	ID           uuid.UUID
 	DeviceID     uuid.UUID
@@ -110,6 +122,11 @@ func (s *Service) dueDeployments(ctx context.Context) ([]dueDeployment, error) {
 // expiry dates never advance), which would silently starve the deployment of
 // all future refreshes. When the key conflicts with a dead job, the stale
 // row is removed so the cycle can be retried.
+//
+// An expiry guard runs after the normal schedule: if a profile is within
+// expiryGuardLead of expiry and has no active (non-dead) refresh job, a
+// refresh is forced. This is the last line of defence against a broken
+// refresh chain letting a profile expire entirely.
 func (s *Service) tick(ctx context.Context) (int, error) {
 	due, err := s.dueDeployments(ctx)
 	if err != nil {
@@ -117,9 +134,116 @@ func (s *Service) tick(ctx context.Context) (int, error) {
 	}
 	created := 0
 	for _, d := range due {
-		dueDay := d.DueAt.UTC().Format("2006-01-02")
+		created += s.createRefreshJob(ctx, d)
+	}
+
+	// Expiry guard: force-refresh deployments within expiryGuardLead of
+	// expiry that have no live (non-dead) refresh job in flight.
+	guarded, err := s.expiryGuard(ctx)
+	if err != nil {
+		s.logger.Warn("expiry guard failed", "error", err)
+	} else {
+		created += guarded
+	}
+
+	return created, nil
+}
+
+// createRefreshJob creates a single refresh job for a due deployment,
+// handling dead-cycle recovery. Returns 1 if a job was created, 0 otherwise.
+func (s *Service) createRefreshJob(ctx context.Context, d dueDeployment) int {
+	dueDay := d.DueAt.UTC().Format("2006-01-02")
+	expiryDay := d.ExpiryAt.UTC().Format("2006-01-02")
+	key := fmt.Sprintf("refresh:%s:%s:%s", d.ID, dueDay, expiryDay)
+	params, err := json.Marshal(map[string]any{
+		"deployment_id": d.ID.String(),
+		"udid":          d.Udid,
+		"device_name":   d.DeviceName,
+		"expiry_at":     d.ExpiryAt.UTC().Format(time.RFC3339),
+		"artifact_id":   d.ArtifactID,
+	})
+	if err != nil {
+		s.logger.Warn("refresh params marshal failed", "deployment", d.ID, "error", err)
+		return 0
+	}
+	job, err := s.jobs.CreateRefresh(ctx, "scheduler", d.DeviceID, params, key, refreshMaxAttempts)
+	if err != nil {
+		s.logger.Warn("refresh job creation failed", "deployment", d.ID, "error", err)
+		return 0
+	}
+	if job != nil && job.State == "dead" {
+		if err := s.releaseDeadCycle(ctx, key); err != nil {
+			s.logger.Warn("clearing dead refresh cycle failed",
+				"deployment", d.ID, "key", key, "error", err)
+			return 0
+		}
+		job, err = s.jobs.CreateRefresh(ctx, "scheduler", d.DeviceID, params, key, refreshMaxAttempts)
+		if err != nil {
+			s.logger.Warn("refresh job re-creation failed", "deployment", d.ID, "error", err)
+			return 0
+		}
+		if job != nil && job.State == "dead" {
+			return 0
+		}
+		s.logger.Info("refresh cycle recovered from dead job",
+			"job", job.ID, "deployment", d.ID)
+	}
+	if job != nil {
+		s.logger.Info("refresh scheduled",
+			"job", job.ID, "deployment", d.ID, "udid", d.Udid,
+			"expiry_at", d.ExpiryAt.Format(time.RFC3339), "due_at", d.DueAt.Format(time.RFC3339))
+		return 1
+	}
+	return 0
+}
+
+// expiryGuard checks for deployments whose profile is within expiryGuardLead
+// of expiry and has no live (non-dead, non-completed) refresh job. These
+// deployments are at risk of expiring because the normal schedule didn't
+// trigger early enough or all refresh attempts failed. The guard forces a
+// new refresh job with a unique key so it doesn't collide with the normal
+// schedule's idempotency.
+func (s *Service) expiryGuard(ctx context.Context) (int, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT dep.id, dep.device_id, d.udid, COALESCE(d.device_name, ''),
+		       ir.provisioning_expiry_at AS expiry_at,
+		       COALESCE(last_install.artifact_id, '') AS artifact_id
+		FROM deployments dep
+		JOIN installation_records ir ON ir.deployment_id = dep.id
+		JOIN devices d ON d.id = dep.device_id
+		LEFT JOIN LATERAL (
+			SELECT j.parameters->>'artifact_id' AS artifact_id
+			FROM jobs j
+			WHERE j.device_id = dep.device_id AND j.job_type = 'install'
+			  AND j.state = 'completed'
+			ORDER BY j.created_at DESC LIMIT 1
+		) last_install ON true
+		WHERE d.agent_id IS NOT NULL
+		  AND ir.provisioning_expiry_at IS NOT NULL
+		  AND ir.provisioning_expiry_at <= now() + $1::interval
+		  AND NOT EXISTS (
+			SELECT 1 FROM jobs j2
+			WHERE j2.device_id = dep.device_id
+			  AND j2.job_type = 'refresh'
+			  AND j2.state IN ('pending', 'claimed', 'in_progress')
+		  )`, expiryGuardLead.String())
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	created := 0
+	for rows.Next() {
+		var d dueDeployment
+		if err := rows.Scan(&d.ID, &d.DeviceID, &d.Udid, &d.DeviceName, &d.ExpiryAt, &d.ArtifactID); err != nil {
+			s.logger.Warn("expiry guard scan failed", "error", err)
+			continue
+		}
+		// Use a key that differs from the normal schedule's key to avoid
+		// collisions, but includes the day so it doesn't duplicate within
+		// the same day.
 		expiryDay := d.ExpiryAt.UTC().Format("2006-01-02")
-		key := fmt.Sprintf("refresh:%s:%s:%s", d.ID, dueDay, expiryDay)
+		key := fmt.Sprintf("refresh-guard:%s:%s", d.ID, expiryDay)
 		params, err := json.Marshal(map[string]any{
 			"deployment_id": d.ID.String(),
 			"udid":          d.Udid,
@@ -128,51 +252,22 @@ func (s *Service) tick(ctx context.Context) (int, error) {
 			"artifact_id":   d.ArtifactID,
 		})
 		if err != nil {
-			return created, err
-		}
-		job, err := s.jobs.Create(ctx, "scheduler", jobs.CreateRequest{
-			JobType:        jobs.JobTypeRefresh,
-			DeviceID:       &d.DeviceID,
-			Parameters:     params,
-			IdempotencyKey: key,
-		})
-		if err != nil {
-			s.logger.Warn("refresh job creation failed", "deployment", d.ID, "error", err)
 			continue
 		}
-		if job != nil && job.State == "dead" {
-			// The cycle's key is held by a dead job: it can never advance the
-			// due/expiry dates, so it would block refresh forever. Drop it and
-			// retry the create once in this pass.
-			if err := s.releaseDeadCycle(ctx, key); err != nil {
-				s.logger.Warn("clearing dead refresh cycle failed",
-					"deployment", d.ID, "key", key, "error", err)
-				continue
-			}
-			job, err = s.jobs.Create(ctx, "scheduler", jobs.CreateRequest{
-				JobType:        jobs.JobTypeRefresh,
-				DeviceID:       &d.DeviceID,
-				Parameters:     params,
-				IdempotencyKey: key,
-			})
-			if err != nil {
-				s.logger.Warn("refresh job re-creation failed", "deployment", d.ID, "error", err)
-				continue
-			}
-			if job != nil && job.State == "dead" {
-				continue
-			}
-			s.logger.Info("refresh cycle recovered from dead job",
-				"job", job.ID, "deployment", d.ID)
+		job, err := s.jobs.CreateRefresh(ctx, "scheduler", d.DeviceID, params, key, refreshMaxAttempts)
+		if err != nil {
+			s.logger.Warn("expiry guard job creation failed", "deployment", d.ID, "error", err)
+			continue
 		}
 		if job != nil {
 			created++
-			s.logger.Info("refresh scheduled",
-				"job", job.ID, "deployment", d.ID, "udid", d.Udid,
-				"expiry_at", d.ExpiryAt.Format(time.RFC3339), "due_at", d.DueAt.Format(time.RFC3339))
+			s.logger.Warn("expiry guard: forced refresh",
+				"job", job.ID, "deployment", d.ID,
+				"expiry_at", d.ExpiryAt.Format(time.RFC3339),
+				"remaining", time.Until(d.ExpiryAt).Round(time.Minute))
 		}
 	}
-	return created, nil
+	return created, rows.Err()
 }
 
 // releaseDeadCycle deletes a refresh job that holds the given idempotency key

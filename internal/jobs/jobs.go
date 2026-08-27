@@ -156,7 +156,7 @@ func NewService(pool *pgxpool.Pool, auditClient *audit.Client, lease time.Durati
 		pool:         pool,
 		audit:        auditClient,
 		lease:        lease,
-		maxBackoff:   30 * time.Minute,
+		maxBackoff:   5 * time.Minute,
 		offlineAfter: 2 * time.Minute,
 		refreshLead:  48 * time.Hour,
 	}
@@ -226,6 +226,48 @@ func (s *Service) Create(ctx context.Context, actor string, req CreateRequest) (
 	err = s.pool.QueryRow(ctx,
 		`SELECT `+jobColumns+` FROM jobs WHERE idempotency_key = $1`,
 		req.IdempotencyKey).Scan(
+		&job.ID, &job.JobType, &job.DeviceID, &job.ApplicationID, &job.State,
+		&job.Attempt, &job.Progress, &job.Parameters, &job.ClaimedBy,
+		&job.LeaseExpiresAt, &job.ErrorCategory, &job.ErrorDetails, &job.RetryAt,
+		&job.Result, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+		&job.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
+// CreateRefresh creates a refresh job with a custom max_attempts value.
+// This is used by the scheduler to give refresh jobs more retry headroom
+// than the default (5), since a refresh that fails today may succeed once
+// the root cause (auth, quota, tunnel) is resolved.
+func (s *Service) CreateRefresh(ctx context.Context, actor string, deviceID *uuid.UUID, params json.RawMessage, idempotencyKey string, maxAttempts int) (*Job, error) {
+	if deviceID == nil {
+		return nil, errors.New("device_id is required for refresh jobs")
+	}
+	if len(params) == 0 {
+		params = json.RawMessage(`{}`)
+	}
+	row := s.pool.QueryRow(ctx, `
+		INSERT INTO jobs (job_type, device_id, parameters, idempotency_key, max_attempts)
+		VALUES ('refresh', $1, $2, $3, $4)
+		ON CONFLICT (idempotency_key) DO NOTHING
+		RETURNING `+jobColumns,
+		deviceID, params, idempotencyKey, maxAttempts)
+	job, err := scanJob(row)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		job = &Job{}
+	}
+	if job.ID != uuid.Nil {
+		s.audit.Record(ctx, actor, "job.created", audit.WithDevice(job.DeviceID))
+		return job, nil
+	}
+	err = s.pool.QueryRow(ctx,
+		`SELECT `+jobColumns+` FROM jobs WHERE idempotency_key = $1`,
+		idempotencyKey).Scan(
 		&job.ID, &job.JobType, &job.DeviceID, &job.ApplicationID, &job.State,
 		&job.Attempt, &job.Progress, &job.Parameters, &job.ClaimedBy,
 		&job.LeaseExpiresAt, &job.ErrorCategory, &job.ErrorDetails, &job.RetryAt,
