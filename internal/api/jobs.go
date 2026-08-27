@@ -76,7 +76,7 @@ func (s *Server) handleClaimJobs(w http.ResponseWriter, r *http.Request) {
 func allowedJobTypesForRole(role string) []string {
 	switch role {
 	case "signing_worker":
-		return []string{jobs.JobTypeSign, jobs.JobTypeExportP12}
+		return []string{jobs.JobTypeSign, jobs.JobTypeExportP12, jobs.JobTypeAppIDs}
 	case "refresh_agent":
 		return []string{jobs.JobTypeRefresh}
 	case "device_service":
