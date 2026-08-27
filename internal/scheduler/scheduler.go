@@ -166,7 +166,7 @@ func (s *Service) createRefreshJob(ctx context.Context, d dueDeployment) int {
 		s.logger.Warn("refresh params marshal failed", "deployment", d.ID, "error", err)
 		return 0
 	}
-	job, err := s.jobs.CreateRefresh(ctx, "scheduler", d.DeviceID, params, key, refreshMaxAttempts)
+	job, err := s.jobs.CreateRefresh(ctx, "scheduler", &d.DeviceID, params, key, refreshMaxAttempts)
 	if err != nil {
 		s.logger.Warn("refresh job creation failed", "deployment", d.ID, "error", err)
 		return 0
@@ -177,7 +177,7 @@ func (s *Service) createRefreshJob(ctx context.Context, d dueDeployment) int {
 				"deployment", d.ID, "key", key, "error", err)
 			return 0
 		}
-		job, err = s.jobs.CreateRefresh(ctx, "scheduler", d.DeviceID, params, key, refreshMaxAttempts)
+		job, err = s.jobs.CreateRefresh(ctx, "scheduler", &d.DeviceID, params, key, refreshMaxAttempts)
 		if err != nil {
 			s.logger.Warn("refresh job re-creation failed", "deployment", d.ID, "error", err)
 			return 0
@@ -254,7 +254,7 @@ func (s *Service) expiryGuard(ctx context.Context) (int, error) {
 		if err != nil {
 			continue
 		}
-		job, err := s.jobs.CreateRefresh(ctx, "scheduler", d.DeviceID, params, key, refreshMaxAttempts)
+		job, err := s.jobs.CreateRefresh(ctx, "scheduler", &d.DeviceID, params, key, refreshMaxAttempts)
 		if err != nil {
 			s.logger.Warn("expiry guard job creation failed", "deployment", d.ID, "error", err)
 			continue
