@@ -123,13 +123,18 @@ func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
 		       j.error_details AS job_error, j.updated_at AS job_updated_at,
 		       COALESCE(last_install.artifact_id, '') AS artifact_id,
 		       COALESCE(app.filename, '') AS app_name,
-		       COALESCE(app.bundle_identifier, '') AS bundle_identifier
+		       COALESCE(app.bundle_identifier, '') AS bundle_identifier,
+		       COALESCE(sign_child.state, '') AS sign_state,
+		       COALESCE(install_child.state, '') AS install_state,
+		       COALESCE(install_child.error_category, '') AS install_error_category,
+		       COALESCE(install_child.error_details, '') AS install_error,
+		       COALESCE(acc.label, '') AS apple_id
 		FROM deployments dep
 		JOIN devices d ON d.id = dep.device_id
 		JOIN installation_records ir ON ir.deployment_id = dep.id
 		LEFT JOIN agents a ON a.id = d.agent_id
 		LEFT JOIN LATERAL (
-			SELECT j.state, j.attempt, j.error_category, j.error_details, j.updated_at
+			SELECT j.id, j.state, j.attempt, j.error_category, j.error_details, j.updated_at
 			FROM jobs j
 			WHERE j.device_id = dep.device_id AND j.job_type = 'refresh'
 			ORDER BY j.created_at DESC LIMIT 1
@@ -151,5 +156,24 @@ func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
 				WHERE sa.id = NULLIF(last_install.artifact_id, '')::uuid
 			)
 		) app ON true
+		LEFT JOIN LATERAL (
+			SELECT j2.state
+			FROM jobs j2
+			WHERE j2.parent_job_id = j.id AND j2.job_type = 'sign'
+			ORDER BY j2.created_at DESC LIMIT 1
+		) sign_child ON true
+		LEFT JOIN LATERAL (
+			SELECT j3.state, j3.error_category, j3.error_details
+			FROM jobs j3
+			WHERE j3.parent_job_id = j.id AND j3.job_type = 'install'
+			ORDER BY j3.created_at DESC LIMIT 1
+		) install_child ON true
+		LEFT JOIN LATERAL (
+			SELECT acc.label
+			FROM installation_records ir2
+			JOIN signed_artifacts sa2 ON sa2.id = ir2.signed_artifact_id
+			JOIN apple_accounts acc ON acc.id = sa2.account_id
+			WHERE ir2.deployment_id = dep.id
+		) acc ON true
 		ORDER BY COALESCE(ir.provisioning_expiry_at, dep.next_refresh_due_at)`)
 }

@@ -180,6 +180,9 @@ func TestSignJobClaimedBySigningAgent(t *testing.T) {
 	truncate(t)
 	_, refreshKey := enrolAgent(t, "refresh-1")
 	_, signKey := enrolAgent(t, "signing-1")
+	if _, err := pool.Exec(t.Context(), `UPDATE agents SET role = 'signing_worker' WHERE name = 'signing-1'`); err != nil {
+		t.Fatal(err)
+	}
 	deviceID := reportDevice(t, refreshKey, "00008120-0000000000000102")
 	artifactID, _ := newApprovedArtifact(t)
 
@@ -209,8 +212,10 @@ func TestSignJobClaimedBySigningAgent(t *testing.T) {
 	}
 }
 
-// TestSignJobReapedLikeRefresh covers the reaper: failed sign jobs are
-// re-queued just like refresh jobs.
+// TestSignJobReapedLikeRefresh covers the reaper: failed sign jobs with a
+// retryable (non-terminal) category are re-queued just like refresh jobs.
+// Terminal categories (auth, certificate, provisioning, entitlement) go dead
+// for operator attention instead.
 func TestSignJobReapedLikeRefresh(t *testing.T) {
 	truncate(t)
 	_, apiKey := enrolAgent(t, "signing-1")
@@ -226,7 +231,7 @@ func TestSignJobReapedLikeRefresh(t *testing.T) {
 	jobID, _ := uuid.Parse(body["id"].(string))
 
 	if _, err := pool.Exec(t.Context(),
-		`UPDATE jobs SET state = 'failed', error_category = 'auth' WHERE id = $1`, jobID); err != nil {
+		`UPDATE jobs SET state = 'failed', error_category = 'other' WHERE id = $1`, jobID); err != nil {
 		t.Fatal(err)
 	}
 	reaped, err := server.jobs.Reap(t.Context())
@@ -247,13 +252,14 @@ func TestSignJobReapedLikeRefresh(t *testing.T) {
 }
 
 // TestAgentArtifactDownloadAuthz covers the agent-facing download endpoint:
-// only approved artifacts are downloadable, and only with agent auth.
+// quarantined artifacts are never downloadable; approved ones require agent
+// auth AND an active job referencing the artifact (hardening against
+// shared/stolen agent keys); unauthenticated downloads are refused.
 func TestAgentArtifactDownloadAuthz(t *testing.T) {
 	truncate(t)
 	_, apiKey := enrolAgent(t, "edge-1")
 	quarantinedID, _ := newApprovedArtifact(t)
 	approvedID, _ := newApprovedArtifact(t)
-
 	// Quarantine the first one so it cannot be downloaded. It must stay
 	// distinct from the second artifact (different bundle ids).
 	res, _ := doJSON(t, "PATCH", "/api/v1/artifacts/"+quarantinedID.String(), adminKey, map[string]any{"state": "quarantined"})
@@ -277,8 +283,33 @@ func TestAgentArtifactDownloadAuthz(t *testing.T) {
 		httpServer.URL+"/api/v1/agents/artifacts/"+approvedID.String()+"/download", nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	res2, _ = http.DefaultClient.Do(req)
+	if res2.StatusCode != http.StatusForbidden {
+		t.Fatalf("unbound approved download should be forbidden, got %d", res2.StatusCode)
+	}
+	res2.Body.Close()
+
+	// Bind a claimed install job to the artifact first.
+	deviceDL := reportDevice(t, apiKey, "00008120-0000000000000111")
+	res, _ = doJSON(t, "POST", "/api/v1/jobs", adminKey, map[string]any{
+		"job_type": "install", "device_id": deviceDL.String(),
+		"idempotency_key": "dl-bind-key",
+		"parameters":      map[string]any{"artifact_id": approvedID.String()},
+	})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create install job: %d", res.StatusCode)
+	}
+	res, body := doJSON(t, "POST", "/api/v1/jobs/claim", apiKey, map[string]any{
+		"job_types": []string{"install"}, "limit": 1,
+	})
+	if res.StatusCode != http.StatusOK || len(body["jobs"].([]any)) != 1 {
+		t.Fatalf("claim install job: %d %v", res.StatusCode, body)
+	}
+	req, _ = http.NewRequest("GET",
+		httpServer.URL+"/api/v1/agents/artifacts/"+approvedID.String()+"/download", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	res2, _ = http.DefaultClient.Do(req)
 	if res2.StatusCode != http.StatusOK {
-		t.Fatalf("approved download: %d", res2.StatusCode)
+		t.Fatalf("bound approved download: %d", res2.StatusCode)
 	}
 	res2.Body.Close()
 
@@ -299,6 +330,10 @@ func TestAgentArtifactDownloadAuthz(t *testing.T) {
 func TestSignedArtifactUpload(t *testing.T) {
 	truncate(t)
 	_, apiKey := enrolAgent(t, "signing-1")
+	_, err := pool.Exec(t.Context(), `UPDATE agents SET role = 'signing_worker' WHERE name = 'signing-1'`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	deviceID := reportDevice(t, apiKey, "00008120-0000000000000104")
 	sourceID, _ := newApprovedArtifactWithBundle(t, "com.example.Sign")
 
@@ -444,6 +479,10 @@ func TestSignedArtifactUpload(t *testing.T) {
 func TestSignedUploadBindingEnforced(t *testing.T) {
 	truncate(t)
 	_, signKey := enrolAgent(t, "signing-1")
+	_, err := pool.Exec(t.Context(), `UPDATE agents SET role = 'signing_worker' WHERE name = 'signing-1'`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, otherKey := enrolAgent(t, "other-agent")
 	deviceID := reportDevice(t, signKey, "00008120-0000000000000105")
 	sourceID, _ := newApprovedArtifactWithBundle(t, "com.example.Sign")
@@ -665,9 +704,12 @@ func TestRoleDerivedJobTypesClaim(t *testing.T) {
 	deviceID := reportDevice(t, refreshKey, "00008120-0000000000000108")
 	sourceID, _ := newApprovedArtifact(t)
 
-	// Create an install job and a sign job on this device
+	// Create an install job and a sign job on this device. No application_id:
+	// jobs.application_id references applications(id), not artifacts, and
+	// jobs.Create requires an idempotency_key.
 	res, _ := doJSON(t, "POST", "/api/v1/jobs", adminKey, map[string]any{
-		"job_type": "install", "device_id": deviceID.String(), "application_id": sourceID.String(),
+		"job_type": "install", "device_id": deviceID.String(),
+		"idempotency_key": "role-test-install",
 	})
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("create install job: %d", res.StatusCode)

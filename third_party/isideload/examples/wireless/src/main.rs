@@ -7,7 +7,12 @@
 //! so the refresh agent can schedule the next refresh from actual data.
 //!
 //! Usage:
-//!   wireless <apple_id> <app_path>
+//!   wireless <apple_id> <app_path>          sign + install (Apple session required)
+//!   wireless install <signed.ipa>           install only, never authenticates
+//!
+//! Setting SKIP_SIGN=1 selects install-only mode with the legacy positional
+//! form. Install-only never constructs an anisette provider, Apple account,
+//! developer session or sideloader, so it cannot authenticate by accident.
 //!
 //! The Apple password is read from the SIDEY_APPLE_MAIN_PASSWORD environment
 //! variable so it never appears in argv/process listings. The legacy
@@ -69,6 +74,53 @@ fn read_embedded_profile_expiry(bundle_dir: &std::path::Path) -> String {
         .expect("profile lacks ExpirationDate")
 }
 
+/// Install-only flow: the IPA is already signed (device-service install jobs
+/// carry signed derivatives from the signing worker). No anisette provider,
+/// no Apple account, no developer session and no 2FA are constructed here —
+/// installing must be incapable of authenticating by construction.
+async fn run_install_only(rsd_host: std::net::IpAddr, rsd_port: u16, app_path: PathBuf) {
+    let app = isideload::sideload::application::Application::new(app_path)
+        .unwrap_or_else(|e| panic!("failed to read app bundle: {e:?}"));
+    let bundle_dir = app.bundle.bundle_dir.clone();
+    let signed_bundle_identifier = app.bundle.bundle_identifier().unwrap_or("").to_string();
+    let profile_expiry_at = read_embedded_profile_expiry(&bundle_dir);
+
+    let stream = tokio::net::TcpStream::connect((rsd_host, rsd_port))
+        .await
+        .expect("Failed to connect to RSD tunnel");
+    let mut handshake = idevice::rsd::RsdHandshake::new(stream)
+        .await
+        .expect("RSD handshake failed");
+    println!(
+        "RSD handshake OK - protocol v{}, {} services",
+        handshake.protocol_version,
+        handshake.services.len()
+    );
+    let mut provider = rsd_host;
+
+    println!("Installing pre-signed {signed_bundle_identifier} over RSD tunnel...");
+    isideload::sideload::install::install_app_rsd(
+        &mut provider,
+        &mut handshake,
+        &bundle_dir,
+        |progress| println!("Installing: {}%", progress),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("Failed to install app on device over RSD: {e:?}"));
+
+    println!("TERMINAL INSTALL Complete");
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": "ok",
+            "installed": true,
+            "resigned": false,
+            "profile_expiry_at": profile_expiry_at,
+            "signed_bundle_identifier": signed_bundle_identifier,
+        })
+    );
+}
+
 #[tokio::main]
 async fn main() {
     isideload::init().expect("Failed to initialize error reporting");
@@ -77,22 +129,25 @@ async fn main() {
 
     let args: Vec<String> = env::args().collect();
 
+    // Install-only mode is decided FIRST, before any Apple object exists:
+    // `wireless install <signed.ipa>`, or SKIP_SIGN=1 with the legacy
+    // positional form (`wireless <apple_id> <signed.ipa>`).
+    let install_subcommand = args.get(1).is_some_and(|a| a == "install");
+    let install_only =
+        install_subcommand || env::var("SKIP_SIGN").as_deref() == Ok("1");
+
     let apple_id = args
         .get(1)
         .expect("Please provide the Apple ID to use for installation");
     // Password via env (never argv). Legacy 4-arg form (password as argv[2])
     // still works so older callers keep functioning, but is logged.
-    let legacy_password = args.len() >= 4;
+    // Not evaluated in install-only mode (see below).
+    let legacy_password = args.len() >= 4 && !install_subcommand;
     if legacy_password {
         eprintln!(
             "WARNING: wireless called with the Apple password on the command line; use SIDEY_APPLE_MAIN_PASSWORD instead"
         );
     }
-    let apple_password = match (env::var("SIDEY_APPLE_MAIN_PASSWORD"), legacy_password) {
-        (Ok(v), _) if !v.is_empty() => v,
-        (_, true) => args[2].clone(),
-        _ => panic!("Please provide the Apple password via SIDEY_APPLE_MAIN_PASSWORD"),
-    };
     let app_path = PathBuf::from(
         args.get(if legacy_password { 3 } else { 2 })
             .expect("Please provide the path to the app to install"),
@@ -106,6 +161,17 @@ async fn main() {
         .unwrap_or_else(|_| "51569".to_string())
         .parse()
         .expect("RSD_PORT must be a port");
+
+    if install_only {
+        run_install_only(rsd_host, rsd_port, app_path).await;
+        return;
+    }
+
+    let apple_password = match (env::var("SIDEY_APPLE_MAIN_PASSWORD"), legacy_password) {
+        (Ok(v), _) if !v.is_empty() => v,
+        (_, true) => args[2].clone(),
+        _ => panic!("Please provide the Apple password via SIDEY_APPLE_MAIN_PASSWORD"),
+    };
     let device_name = env::var("DEVICE_NAME").unwrap_or_else(|_| "ACU Covert Camera".to_string());
     let device_udid = env::var("DEVICE_UDID").unwrap_or_else(|_| {
         panic!("DEVICE_UDID is required: refusing to sign without a target device")
@@ -193,42 +259,6 @@ async fn main() {
         handshake.services.len()
     );
     let mut provider = rsd_host;
-
-    // Install-only mode (SKIP_SIGN=1): the IPA is already signed (device-
-    // service install jobs carry signed derivatives produced by the signing
-    // worker). Install it as-is and report the embedded profile's expiry.
-    // Never re-sign here: re-signing appends a second team suffix to the
-    // bundle identifier and churns portal App IDs, which broke installs
-    // device-wide (0xe8008015, Sep 2026). No Apple session is needed.
-    if env::var("SKIP_SIGN").as_deref() == Ok("1") {
-        let app = isideload::sideload::application::Application::new(app_path.clone())
-            .unwrap_or_else(|e| panic!("failed to read app bundle: {e:?}"));
-        let bundle_dir = app.bundle.bundle_dir.clone();
-        let signed_bundle_identifier =
-            app.bundle.bundle_identifier().unwrap_or("").to_string();
-        let profile_expiry_at = read_embedded_profile_expiry(&bundle_dir);
-        println!("Installing pre-signed {signed_bundle_identifier} over RSD tunnel...");
-        isideload::sideload::install::install_app_rsd(
-            &mut provider,
-            &mut handshake,
-            &bundle_dir,
-            |progress| println!("Installing: {}%", progress),
-        )
-        .await
-        .unwrap_or_else(|e| panic!("Failed to install app on device over RSD: {e:?}"));
-        println!("TERMINAL INSTALL Complete");
-        println!(
-            "{}",
-            serde_json::json!({
-                "status": "ok",
-                "installed": true,
-                "resigned": false,
-                "profile_expiry_at": profile_expiry_at,
-                "signed_bundle_identifier": signed_bundle_identifier,
-            })
-        );
-        return;
-    }
 
     println!("Registering device {} with the team...", device_udid);
     let mut dev_session = dev_session;

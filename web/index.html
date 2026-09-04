@@ -1175,19 +1175,32 @@ function renderMyPhone(refRows, devRows) {
       <span style="min-width:130px; font-weight:600;">Signing</span>
       ${signBadge}
       <span class="text-muted" style="font-size:12px;">profile expires ${fmtDate(row.profile_expiry_at)}</span>
-      ${expiredAt ? `<button class="btn btn-sm" onclick="refreshSigning('${ios.id}','${row.deployment_id || ''}','${row.profile_expiry_at || ''}','${row.artifact_id || ''}')">↻ Re-sign now</button>` : ""}
+      ${expiredAt ? `<button class="btn btn-sm" onclick="refreshSigning('${row.deployment_id || ''}')">↻ Re-sign now</button>` : ""}
     </div>`);
 
     const healthy = row.last_refresh_result === "ok" || row.last_refresh_result === "completed";
     const running = row.refresh_job_state === "claimed" || row.refresh_job_state === "in_progress";
+    const needsAttention = row.last_refresh_result === "attention";
     const working = running || (healthy && new Date(row.next_refresh_due_at) > new Date());
     let refreshBadge, refreshNote;
+    // Workflow stage comes from the refresh parent's sign/install children.
+    const stage = row.refresh_job_state === "completed" || !running ? ""
+      : !row.sign_state || row.sign_state === "pending" ? "preparing signature"
+      : row.sign_state === "completed" && (!row.install_state || row.install_state === "pending") ? "waiting for device"
+      : row.install_state === "completed" ? "verifying"
+      : row.sign_state !== "completed" ? "signing"
+      : "installing";
+    const stageNote = stage ? `<span class="text-muted" style="font-size:12px;">stage: ${stage}</span>` : "";
+    const accountNote = row.apple_id ? `<span class="text-muted" style="font-size:12px;">account: ${row.apple_id}</span>` : "";
     if (running) {
       refreshBadge = `<span class="badge badge-warning">● refreshing…</span>`;
       refreshNote = `<span class="text-muted" style="font-size:12px;">attempt ${row.attempt || 1} in progress</span>`;
     } else if (row.refresh_job_state === "dead") {
       refreshBadge = `<span class="badge badge-error">● auto-refresh broken</span>`;
       refreshNote = `<span class="text-muted" style="font-size:12px; color:var(--error);">last job dead — ${row.job_error || row.last_refresh_error || "no details"}</span>`;
+    } else if (needsAttention) {
+      refreshBadge = `<span class="badge badge-error">● needs attention</span>`;
+      refreshNote = `<span class="text-muted" style="font-size:12px; color:var(--error);">${row.last_refresh_error || "re-associate the deployment"}</span>`;
     } else if (working) {
       refreshBadge = `<span class="badge badge-success">● auto-refresh on</span>`;
       refreshNote = `<span class="text-muted" style="font-size:12px;">next refresh due ${fmtDate(row.next_refresh_due_at)}</span>`;
@@ -1199,7 +1212,9 @@ function renderMyPhone(refRows, devRows) {
       <span style="min-width:130px; font-weight:600;">Auto-refresh</span>
       ${refreshBadge}
       ${refreshNote}
-      <button class="btn btn-sm" onclick="refreshSigning('${ios.id}','${row.deployment_id || ''}','${row.profile_expiry_at || ''}','${row.artifact_id || ''}')">↻ Refresh now</button>
+      ${stageNote}
+      ${accountNote}
+      <button class="btn btn-sm" onclick="refreshSigning('${row.deployment_id || ''}')">↻ Refresh now</button>
     </div>`);
   } else {
     lines.push(`<div class="text-muted" style="font-size:13px;">No deployment/profile yet — sideload an app first and the 7-day signing calendar will appear here.</div>`);
@@ -1230,30 +1245,19 @@ function renderMyPhone(refRows, devRows) {
   body.innerHTML = lines.join("");
 }
 
-async function refreshSigning(deviceId, deploymentId, expiryAt, artifactId) {
-  if (!deviceId) return;
+async function refreshSigning(deploymentId) {
+  if (!deploymentId) { alert("No deployment to refresh."); return; }
   const btn = event && event.currentTarget;
   if (btn) { btn.disabled = true; btn.textContent = "⏳…"; }
-  const dev = (liveDevices || []).find(d => d.id === deviceId);
   try {
-    // One manual refresh goes through a fresh idempotency key so it is never
-    // swallowed by the scheduler's cycle key. The device service claims it
-    // and re-signs the profile over the wireless tunnel.
-    const resp = await apiFetch("/api/v1/jobs", {
+    // Manual refresh creates the parent workflow server-side: the server
+    // resolves source IPA and Apple account through the installation
+    // record, so the browser never selects an artifact (stale UI state
+    // once picked a signed derivative and corrupted the bundle lineage).
+    const resp = await apiFetch("/api/v1/admin/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        job_type: "refresh",
-        device_id: deviceId,
-        idempotency_key: "manual:" + (crypto.randomUUID ? crypto.randomUUID() : Date.now()),
-        parameters: {
-          deployment_id: deploymentId,
-          udid: (dev && dev.udid) || "",
-          device_name: (dev && dev.device_name) || "manual",
-          expiry_at: expiryAt || "",
-          artifact_id: artifactId || ""
-        }
-      })
+      body: JSON.stringify({ deployment_id: deploymentId, reason: "manual" })
     });
     if (!resp.ok) { alert("Failed to start refresh: " + await resp.text()); return; }
     const data = await resp.json();
@@ -2148,8 +2152,8 @@ function renderDeviceApps(refRows, devRows) {
         const appLabel = escapeHtml((a.app_name || a.bundle_identifier || "App").replace(/\.ipa$/i, ""));
         const refreshState = a.last_refresh_result === "ok" || a.last_refresh_result === "completed" ? "ok" : (a.last_refresh_result || "—");
         const okBadge = refreshState === "ok" ? "badge-success" : refreshState === "failed" ? "badge-error" : "badge-neutral";
-        const reSignBtn = d.id && a.artifact_id
-          ? `<button class="btn btn-sm btn-primary" onclick="refreshSigning('${d.id}','${a.deployment_id}','${a.profile_expiry_at}','${a.artifact_id}')">Re-sign</button>`
+        const reSignBtn = a.deployment_id
+          ? `<button class="btn btn-sm btn-primary" onclick="refreshSigning('${a.deployment_id}')">Re-sign</button>`
           : "";
         return `<div class="app-row">
           <div>

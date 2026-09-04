@@ -106,10 +106,16 @@ type Job struct {
 	ErrorDetails   *string         `json:"error_details"`
 	RetryAt        *time.Time      `json:"retry_at"`
 	Result         json.RawMessage `json:"result"`
-	CreatedAt      time.Time       `json:"created_at"`
-	StartedAt      *time.Time      `json:"started_at"`
-	CompletedAt    *time.Time      `json:"completed_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	// ParentJobID links a child job to its parent workflow (e.g. a sign or
+	// install child points at its refresh parent). NULL for standalone jobs.
+	ParentJobID *uuid.UUID `json:"parent_job_id,omitempty"`
+	// Purpose names the workflow that created the job: deploy, refresh,
+	// manual_refresh, update. NULL for standalone jobs.
+	Purpose        *string        `json:"purpose,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	StartedAt      *time.Time     `json:"started_at"`
+	CompletedAt    *time.Time     `json:"completed_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 // CreateRequest describes a new job.
@@ -120,6 +126,8 @@ type CreateRequest struct {
 	Parameters     json.RawMessage `json:"parameters"`
 	IdempotencyKey string          `json:"idempotency_key"`
 	RetryAt        *time.Time      `json:"retry_at"`
+	ParentJobID    *uuid.UUID      `json:"parent_job_id,omitempty"`
+	Purpose        *string         `json:"purpose,omitempty"`
 }
 
 // UpdateRequest describes a status update by the claiming agent.
@@ -169,7 +177,8 @@ func NewService(pool *pgxpool.Pool, auditClient *audit.Client, lease time.Durati
 const jobColumns = `
 	id, job_type, device_id, application_id, state, attempt, progress,
 	parameters, claimed_by, lease_expires_at, error_category, error_details,
-	retry_at, result, created_at, started_at, completed_at, updated_at`
+	retry_at, result, parent_job_id, purpose,
+	created_at, started_at, completed_at, updated_at`
 
 func scanJob(row pgx.Row) (*Job, error) {
 	j := &Job{}
@@ -177,7 +186,8 @@ func scanJob(row pgx.Row) (*Job, error) {
 		&j.ID, &j.JobType, &j.DeviceID, &j.ApplicationID, &j.State,
 		&j.Attempt, &j.Progress, &j.Parameters, &j.ClaimedBy,
 		&j.LeaseExpiresAt, &j.ErrorCategory, &j.ErrorDetails, &j.RetryAt,
-		&j.Result, &j.CreatedAt, &j.StartedAt, &j.CompletedAt, &j.UpdatedAt,
+		&j.Result, &j.ParentJobID, &j.Purpose,
+		&j.CreatedAt, &j.StartedAt, &j.CompletedAt, &j.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -200,12 +210,12 @@ func (s *Service) Create(ctx context.Context, actor string, req CreateRequest) (
 	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO jobs (job_type, device_id, application_id, parameters,
-			idempotency_key, retry_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+			idempotency_key, retry_at, parent_job_id, purpose)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (idempotency_key) DO NOTHING
 		RETURNING `+jobColumns,
 		req.JobType, req.DeviceID, req.ApplicationID, parameters,
-		req.IdempotencyKey, req.RetryAt)
+		req.IdempotencyKey, req.RetryAt, req.ParentJobID, req.Purpose)
 	job, err := scanJob(row)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -229,7 +239,8 @@ func (s *Service) Create(ctx context.Context, actor string, req CreateRequest) (
 		&job.ID, &job.JobType, &job.DeviceID, &job.ApplicationID, &job.State,
 		&job.Attempt, &job.Progress, &job.Parameters, &job.ClaimedBy,
 		&job.LeaseExpiresAt, &job.ErrorCategory, &job.ErrorDetails, &job.RetryAt,
-		&job.Result, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+		&job.Result, &job.ParentJobID, &job.Purpose,
+		&job.CreatedAt, &job.StartedAt, &job.CompletedAt,
 		&job.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -237,23 +248,26 @@ func (s *Service) Create(ctx context.Context, actor string, req CreateRequest) (
 	return job, nil
 }
 
-// CreateRefresh creates a refresh job with a custom max_attempts value.
-// This is used by the scheduler to give refresh jobs more retry headroom
-// than the default (5), since a refresh that fails today may succeed once
-// the root cause (auth, quota, tunnel) is resolved.
-func (s *Service) CreateRefresh(ctx context.Context, actor string, deviceID *uuid.UUID, params json.RawMessage, idempotencyKey string, maxAttempts int) (*Job, error) {
+// CreateRefresh creates a refresh job with a custom max_attempts value and
+// workflow purpose. This is used by the scheduler to give refresh jobs more
+// retry headroom than the default (5), since a refresh that fails today may
+// succeed once the root cause (auth, quota, tunnel) is resolved.
+func (s *Service) CreateRefresh(ctx context.Context, actor string, deviceID *uuid.UUID, params json.RawMessage, idempotencyKey string, maxAttempts int, purpose string) (*Job, error) {
 	if deviceID == nil {
 		return nil, errors.New("device_id is required for refresh jobs")
 	}
 	if len(params) == 0 {
 		params = json.RawMessage(`{}`)
 	}
+	if purpose == "" {
+		purpose = "refresh"
+	}
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO jobs (job_type, device_id, parameters, idempotency_key, max_attempts)
-		VALUES ('refresh', $1, $2, $3, $4)
+		INSERT INTO jobs (job_type, device_id, parameters, idempotency_key, max_attempts, purpose)
+		VALUES ('refresh', $1, $2, $3, $4, $5)
 		ON CONFLICT (idempotency_key) DO NOTHING
 		RETURNING `+jobColumns,
-		deviceID, params, idempotencyKey, maxAttempts)
+		deviceID, params, idempotencyKey, maxAttempts, purpose)
 	job, err := scanJob(row)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -271,7 +285,8 @@ func (s *Service) CreateRefresh(ctx context.Context, actor string, deviceID *uui
 		&job.ID, &job.JobType, &job.DeviceID, &job.ApplicationID, &job.State,
 		&job.Attempt, &job.Progress, &job.Parameters, &job.ClaimedBy,
 		&job.LeaseExpiresAt, &job.ErrorCategory, &job.ErrorDetails, &job.RetryAt,
-		&job.Result, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+		&job.Result, &job.ParentJobID, &job.Purpose,
+		&job.CreatedAt, &job.StartedAt, &job.CompletedAt,
 		&job.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -284,6 +299,59 @@ func (s *Service) CreateRefresh(ctx context.Context, actor string, deviceID *uui
 func (s *Service) Get(ctx context.Context, jobID uuid.UUID) (*Job, error) {
 	row := s.pool.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id = $1`, jobID)
 	return scanJob(row)
+}
+
+// ClaimSpecific claims one known job for an agent. Pending jobs are claimed
+// directly; failed or dead ones are requeued first so install retries reuse
+// the existing signed artifact instead of signing again. Completed jobs are
+// returned as-is; active ones are an error. This is how the refresh
+// orchestrator takes ownership of its install child while the normal poll
+// loop keeps claiming everything else.
+func (s *Service) ClaimSpecific(ctx context.Context, agentID, jobID uuid.UUID) (*Job, error) {
+	var cur string
+	var claimedBy *uuid.UUID
+	if err := s.pool.QueryRow(ctx,
+		`SELECT state, claimed_by FROM jobs WHERE id = $1`, jobID).Scan(&cur, &claimedBy); err != nil {
+		return nil, fmt.Errorf("job not found")
+	}
+	switch cur {
+	case StateCompleted:
+		return s.Get(ctx, jobID)
+	case StateClaimed, StateInProgress:
+		// Our own in-flight claim (e.g. orchestrator resumed after a
+		// restart inside the lease window) resumes instead of conflicting.
+		if claimedBy != nil && *claimedBy == agentID {
+			return s.Get(ctx, jobID)
+		}
+		return nil, fmt.Errorf("job is already active")
+	case StateFailed, StateDead:
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE jobs
+			SET state = $1, claimed_by = NULL, lease_expires_at = NULL,
+			    retry_at = NULL, updated_at = now()
+			WHERE id = $2`, StatePending, jobID); err != nil {
+			return nil, fmt.Errorf("job requeue failed")
+		}
+	case StatePending:
+		// Proceed to claim below.
+	default:
+		return nil, fmt.Errorf("job cannot be claimed from state %s", cur)
+	}
+	claimed, err := scanJob(s.pool.QueryRow(ctx, `
+		UPDATE jobs
+		SET state = $1, claimed_by = $2, attempt = attempt + 1,
+		    started_at = COALESCE(started_at, now()),
+		    lease_expires_at = now() + $3::interval,
+		    retry_at = NULL, updated_at = now()
+		WHERE id = $4 AND state = $5
+		RETURNING `+jobColumns,
+		StateClaimed, agentID, s.leaseSeconds()+" seconds", jobID, StatePending))
+	if err != nil {
+		return nil, fmt.Errorf("job could not be claimed")
+	}
+	s.audit.Record(ctx, "agent:"+agentID.String(), "job.claimed",
+		audit.WithDevice(claimed.DeviceID))
+	return claimed, nil
 }
 
 func collectUUIDs(rows pgx.Rows) ([]uuid.UUID, error) {
@@ -379,7 +447,8 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 				&job.ID, &job.JobType, &job.DeviceID, &job.ApplicationID, &job.State,
 				&job.Attempt, &job.Progress, &job.Parameters, &job.ClaimedBy,
 				&job.LeaseExpiresAt, &job.ErrorCategory, &job.ErrorDetails, &job.RetryAt,
-				&job.Result, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+				&job.Result, &job.ParentJobID, &job.Purpose,
+				&job.CreatedAt, &job.StartedAt, &job.CompletedAt,
 				&job.UpdatedAt)
 			if err == nil {
 				claimed = append(claimed, job)
@@ -501,8 +570,12 @@ func (s *Service) Claim(ctx context.Context, agentID uuid.UUID, deviceIDs []uuid
 			&job.ID, &job.JobType, &job.DeviceID, &job.ApplicationID, &job.State,
 			&job.Attempt, &job.Progress, &job.Parameters, &job.ClaimedBy,
 			&job.LeaseExpiresAt, &job.ErrorCategory, &job.ErrorDetails, &job.RetryAt,
-			&job.Result, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+			&job.Result, &job.ParentJobID, &job.Purpose,
+			&job.CreatedAt, &job.StartedAt, &job.CompletedAt,
 			&job.UpdatedAt)
+		if err != nil {
+			return nil, err
+		}
 		claimed = append(claimed, job)
 	}
 
@@ -531,6 +604,7 @@ func (s *Service) Update(ctx context.Context, agentID, jobID uuid.UUID, req Upda
 		&current.State, &current.Attempt, &current.Progress, &current.Parameters,
 		&current.ClaimedBy, &current.LeaseExpiresAt, &current.ErrorCategory,
 		&current.ErrorDetails, &current.RetryAt, &current.Result,
+		&current.ParentJobID, &current.Purpose,
 		&current.CreatedAt, &current.StartedAt, &current.CompletedAt,
 		&current.UpdatedAt)
 	if err != nil {
@@ -583,6 +657,7 @@ func (s *Service) Update(ctx context.Context, agentID, jobID uuid.UUID, req Upda
 		&updated.State, &updated.Attempt, &updated.Progress, &updated.Parameters,
 		&updated.ClaimedBy, &updated.LeaseExpiresAt, &updated.ErrorCategory,
 		&updated.ErrorDetails, &updated.RetryAt, &updated.Result,
+		&updated.ParentJobID, &updated.Purpose,
 		&updated.CreatedAt, &updated.StartedAt, &updated.CompletedAt,
 		&updated.UpdatedAt)
 	if err != nil {
@@ -615,14 +690,17 @@ func (s *Service) applyRefreshOutcome(ctx context.Context, tx pgx.Tx, job *Job, 
 		return fmt.Errorf("refresh job %s: missing deployment_id in parameters", job.ID)
 	}
 	if job.State == StateCompleted {
-		// Prefer the real expiry reported by the refresh agent (the wireless
-		// installer prints the embedded provisioning profile's expiry after a
-		// successful install). Fall back to an assumed validity window when
-		// the agent does not report one.
+		// Prefer the real expiry reported by the refresh orchestrator (the
+		// installer prints the embedded provisioning profile's expiry after
+		// a successful install). Fall back to an assumed validity window
+		// when the agent does not report one.
 		newExpiry := time.Now().Add(refreshProfileValidity)
+		var signedID, installID *uuid.UUID
 		if len(req.Result) > 0 {
 			var result struct {
-				ProfileExpiryAt *time.Time `json:"profile_expiry_at"`
+				ProfileExpiryAt  *time.Time `json:"profile_expiry_at"`
+				SignedArtifactID *uuid.UUID `json:"signed_artifact_id"`
+				InstallJobID     *uuid.UUID `json:"install_job_id"`
 			}
 			if err := json.Unmarshal(req.Result, &result); err != nil {
 				return fmt.Errorf("refresh job %s: invalid result JSON", job.ID)
@@ -630,6 +708,7 @@ func (s *Service) applyRefreshOutcome(ctx context.Context, tx pgx.Tx, job *Job, 
 			if result.ProfileExpiryAt != nil {
 				newExpiry = *result.ProfileExpiryAt
 			}
+			signedID, installID = result.SignedArtifactID, result.InstallJobID
 		}
 		nextDue := newExpiry.Add(-s.refreshLead)
 		if _, err := tx.Exec(ctx, `
@@ -641,7 +720,22 @@ func (s *Service) applyRefreshOutcome(ctx context.Context, tx pgx.Tx, job *Job, 
 			WHERE id = $1`, params.DeploymentID, nextDue); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
+		// The completed refresh names the exact signed artifact installed
+		// and the install job that installed it: this row becomes the
+		// authoritative install state the next refresh resolves through.
+		// Legacy results without the ids keep the previous record linkage
+		// untouched (only expiry advances).
+		if signedID != nil {
+			if _, err := tx.Exec(ctx, `
+				UPDATE installation_records SET
+					provisioning_expiry_at = $2,
+					verified_at = now(),
+					signed_artifact_id = $3,
+					install_job_id = $4
+				WHERE deployment_id = $1`, params.DeploymentID, newExpiry, signedID, installID); err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(ctx, `
 			UPDATE installation_records SET
 				provisioning_expiry_at = $2,
 				verified_at = now()

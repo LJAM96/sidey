@@ -1,5 +1,7 @@
 #!/bin/bash
-# Wireless (no-USB) SideStore re-sign + install via the RemotePairing RSD tunnel.
+# Wireless (no-USB) install via the RemotePairing RSD tunnel.
+# With SKIP_SIGN=1 the IPA is installed as-is (already signed by the signing
+# worker; no Apple credentials are touched). Otherwise sign + install.
 #
 # Prereqs (one-time, over USB):
 #   pymobiledevice3 lockdown wifi-connections --state on
@@ -97,9 +99,17 @@ if [ ! -x "$BIN" ]; then
     (cd "$ISIDELOAD_DIR" && cargo build --release -p wireless)
 fi
 
-# 3. Sign + install over the tunnel (or install-only when SKIP_SIGN=1: the
-# IPA is an already-signed derivative from the signing worker).
+# 3. Install over the tunnel: install-only when SKIP_SIGN=1 (the IPA is an
+# already-signed derivative from the signing worker), otherwise sign +
+# install. Install-only never sources Apple credentials and never passes
+# them to the binary, so it cannot authenticate by accident.
 echo "Installing $(basename "$IPA_PATH") over RSD tunnel..."
+if [ "${SKIP_SIGN:-}" = "1" ]; then
+    sudo env \
+        RSD_ADDR="$RSD_ADDR" RSD_PORT="$RSD_PORT" \
+        SKIP_SIGN=1 \
+        "$BIN" install "$IPA_PATH"
+else
 sudo bash -c "source /usr/local/sbin/sidey-creds.sh && \
     env SIDEY_APPLE_MAIN_PASSWORD=\"\$SIDEY_APPLE_MAIN_PASSWORD\" \
         ANISETTE_URL='${ANISETTE_URL:-http://127.0.0.1:6970}' \
@@ -109,4 +119,5 @@ sudo bash -c "source /usr/local/sbin/sidey-creds.sh && \
         DEVICE_TYPE='${DEVICE_TYPE:-}' \
         SKIP_SIGN='${SKIP_SIGN:-}' \
         '$BIN' \"\$SIDEY_APPLE_ID\" '$IPA_PATH'"
+fi
 echo "Done."

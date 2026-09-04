@@ -37,13 +37,16 @@ const expiryGuardLead = 24 * time.Hour
 const refreshMaxAttempts = 15
 
 type dueDeployment struct {
-	ID           uuid.UUID
-	DeviceID     uuid.UUID
-	Udid         string
-	DeviceName   string
-	DueAt        time.Time
-	ExpiryAt     time.Time
-	ArtifactID   string
+	ID               uuid.UUID
+	DeviceID         uuid.UUID
+	Udid             string
+	DeviceName       string
+	DueAt            time.Time
+	ExpiryAt         time.Time
+	SourceArtifactID string
+	SignedArtifactID string
+	AccountID        string
+	AppleID          string
 }
 
 type Service struct {
@@ -68,26 +71,23 @@ func NewService(pool *pgxpool.Pool, logger *slog.Logger, jobService *jobs.Servic
 
 // dueDeployments returns deployments whose refresh is due (profile expiry is
 // within the lead window, or already past) and whose device has an agent.
-// It also resolves the signed artifact the deployment last installed from,
-// so a refresh can re-install the same app instead of whatever the installer
-// wrapper happens to default to.
+// Source IPA, installed derivative and Apple account resolve authoritatively
+// through the installation record: deployments that cannot be resolved are
+// left out here and flagged by markUnrefreshable instead of guessed.
 func (s *Service) dueDeployments(ctx context.Context) ([]dueDeployment, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT dep.id, dep.device_id, d.udid, COALESCE(d.device_name, ''),
 		       COALESCE(dep.next_refresh_due_at, ir.provisioning_expiry_at - $1::interval) AS due_at,
 		       COALESCE(ir.provisioning_expiry_at, dep.next_refresh_due_at + $1::interval) AS expiry_at,
-		       COALESCE(last_install.artifact_id, '') AS artifact_id
+		       sa.source_artifact_id::text AS source_artifact_id,
+		       COALESCE(ir.signed_artifact_id::text, '') AS signed_artifact_id,
+		       acc.id::text AS account_id,
+		       COALESCE(acc.label, '') AS apple_id
 		FROM deployments dep
 		JOIN installation_records ir ON ir.deployment_id = dep.id
 		JOIN devices d ON d.id = dep.device_id
-		LEFT JOIN LATERAL (
-			SELECT COALESCE(sa.source_artifact_id::text, j.parameters->>'artifact_id') AS artifact_id
-			FROM jobs j
-			LEFT JOIN signed_artifacts sa ON sa.id = NULLIF(j.parameters->>'artifact_id', '')::uuid
-			WHERE j.device_id = dep.device_id AND j.job_type = 'install'
-			  AND j.state = 'completed'
-			ORDER BY j.created_at DESC LIMIT 1
-		) last_install ON true
+		JOIN signed_artifacts sa ON sa.id = ir.signed_artifact_id
+		JOIN apple_accounts acc ON acc.id = sa.account_id
 		WHERE d.agent_id IS NOT NULL
 		  AND COALESCE(dep.next_refresh_due_at, ir.provisioning_expiry_at - $1::interval) <= now()
 		  AND ir.provisioning_expiry_at IS NOT NULL
@@ -101,7 +101,8 @@ func (s *Service) dueDeployments(ctx context.Context) ([]dueDeployment, error) {
 	for rows.Next() {
 		var d dueDeployment
 		var expiryAt *time.Time
-		if err := rows.Scan(&d.ID, &d.DeviceID, &d.Udid, &d.DeviceName, &d.DueAt, &expiryAt, &d.ArtifactID); err != nil {
+		if err := rows.Scan(&d.ID, &d.DeviceID, &d.Udid, &d.DeviceName, &d.DueAt, &expiryAt,
+			&d.SourceArtifactID, &d.SignedArtifactID, &d.AccountID, &d.AppleID); err != nil {
 			return nil, err
 		}
 		if expiryAt != nil {
@@ -110,6 +111,44 @@ func (s *Service) dueDeployments(ctx context.Context) ([]dueDeployment, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// markUnrefreshable flags due deployments that cannot be resolved to a
+// source IPA and Apple account (missing installation record linkage). They
+// are never scheduled blindly; the dashboard surfaces them as needing
+// attention (manual reassociation) instead.
+func (s *Service) markUnrefreshable(ctx context.Context) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT dep.id
+		FROM deployments dep
+		JOIN installation_records ir ON ir.deployment_id = dep.id
+		JOIN devices d ON d.id = dep.device_id
+		LEFT JOIN signed_artifacts sa ON sa.id = ir.signed_artifact_id
+		LEFT JOIN apple_accounts acc ON acc.id = sa.account_id
+		WHERE d.agent_id IS NOT NULL
+		  AND COALESCE(dep.next_refresh_due_at, ir.provisioning_expiry_at - $1::interval) <= now()
+		  AND ir.provisioning_expiry_at IS NOT NULL
+		  AND (ir.signed_artifact_id IS NULL OR sa.id IS NULL OR acc.id IS NULL)`, s.lead.String())
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	const reason = "needs attention: deployment is not linked to a signed artifact and Apple account (re-associate instead of guessing)"
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE deployments SET
+				last_refresh_at = now(),
+				last_refresh_result = 'attention',
+				last_refresh_error = $2
+			WHERE id = $1 AND COALESCE(last_refresh_error, '') <> $2`, id, reason); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // tick inspects due deployments and enqueues one refresh job per refresh
@@ -129,6 +168,12 @@ func (s *Service) dueDeployments(ctx context.Context) ([]dueDeployment, error) {
 // refresh is forced. This is the last line of defence against a broken
 // refresh chain letting a profile expire entirely.
 func (s *Service) tick(ctx context.Context) (int, error) {
+	// Deployments that are due but cannot be resolved to a source IPA and
+	// Apple account are flagged for manual reassociation, never scheduled
+	// blindly.
+	if err := s.markUnrefreshable(ctx); err != nil {
+		s.logger.Warn("attention marking failed", "error", err)
+	}
 	due, err := s.dueDeployments(ctx)
 	if err != nil {
 		return 0, err
@@ -152,22 +197,28 @@ func (s *Service) tick(ctx context.Context) (int, error) {
 
 // createRefreshJob creates a single refresh job for a due deployment,
 // handling dead-cycle recovery. Returns 1 if a job was created, 0 otherwise.
+// The job carries the authoritative workflow context (source IPA, previous
+// derivative, Apple account) so no later stage has to guess it.
 func (s *Service) createRefreshJob(ctx context.Context, d dueDeployment) int {
 	dueDay := d.DueAt.UTC().Format("2006-01-02")
 	expiryDay := d.ExpiryAt.UTC().Format("2006-01-02")
 	key := fmt.Sprintf("refresh:%s:%s:%s", d.ID, dueDay, expiryDay)
 	params, err := json.Marshal(map[string]any{
-		"deployment_id": d.ID.String(),
-		"udid":          d.Udid,
-		"device_name":   d.DeviceName,
-		"expiry_at":     d.ExpiryAt.UTC().Format(time.RFC3339),
-		"artifact_id":   d.ArtifactID,
+		"deployment_id":              d.ID.String(),
+		"source_artifact_id":         d.SourceArtifactID,
+		"previous_signed_artifact_id": d.SignedArtifactID,
+		"apple_account_id":           d.AccountID,
+		"apple_id":                   d.AppleID,
+		"udid":                       d.Udid,
+		"device_name":                d.DeviceName,
+		"expiry_at":                  d.ExpiryAt.UTC().Format(time.RFC3339),
+		"artifact_id":                d.SourceArtifactID,
 	})
 	if err != nil {
 		s.logger.Warn("refresh params marshal failed", "deployment", d.ID, "error", err)
 		return 0
 	}
-	job, err := s.jobs.CreateRefresh(ctx, "scheduler", &d.DeviceID, params, key, refreshMaxAttempts)
+	job, err := s.jobs.CreateRefresh(ctx, "scheduler", &d.DeviceID, params, key, refreshMaxAttempts, "refresh")
 	if err != nil {
 		s.logger.Warn("refresh job creation failed", "deployment", d.ID, "error", err)
 		return 0
@@ -178,7 +229,7 @@ func (s *Service) createRefreshJob(ctx context.Context, d dueDeployment) int {
 				"deployment", d.ID, "key", key, "error", err)
 			return 0
 		}
-		job, err = s.jobs.CreateRefresh(ctx, "scheduler", &d.DeviceID, params, key, refreshMaxAttempts)
+		job, err = s.jobs.CreateRefresh(ctx, "scheduler", &d.DeviceID, params, key, refreshMaxAttempts, "refresh")
 		if err != nil {
 			s.logger.Warn("refresh job re-creation failed", "deployment", d.ID, "error", err)
 			return 0
@@ -208,18 +259,15 @@ func (s *Service) expiryGuard(ctx context.Context) (int, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT dep.id, dep.device_id, d.udid, COALESCE(d.device_name, ''),
 		       ir.provisioning_expiry_at AS expiry_at,
-		       COALESCE(last_install.artifact_id, '') AS artifact_id
+		       sa.source_artifact_id::text AS source_artifact_id,
+		       COALESCE(ir.signed_artifact_id::text, '') AS signed_artifact_id,
+		       acc.id::text AS account_id,
+		       COALESCE(acc.label, '') AS apple_id
 		FROM deployments dep
 		JOIN installation_records ir ON ir.deployment_id = dep.id
 		JOIN devices d ON d.id = dep.device_id
-		LEFT JOIN LATERAL (
-			SELECT COALESCE(sa.source_artifact_id::text, j.parameters->>'artifact_id') AS artifact_id
-			FROM jobs j
-			LEFT JOIN signed_artifacts sa ON sa.id = NULLIF(j.parameters->>'artifact_id', '')::uuid
-			WHERE j.device_id = dep.device_id AND j.job_type = 'install'
-			  AND j.state = 'completed'
-			ORDER BY j.created_at DESC LIMIT 1
-		) last_install ON true
+		JOIN signed_artifacts sa ON sa.id = ir.signed_artifact_id
+		JOIN apple_accounts acc ON acc.id = sa.account_id
 		WHERE d.agent_id IS NOT NULL
 		  AND ir.provisioning_expiry_at IS NOT NULL
 		  AND ir.provisioning_expiry_at <= now() + $1::interval
@@ -237,7 +285,8 @@ func (s *Service) expiryGuard(ctx context.Context) (int, error) {
 	created := 0
 	for rows.Next() {
 		var d dueDeployment
-		if err := rows.Scan(&d.ID, &d.DeviceID, &d.Udid, &d.DeviceName, &d.ExpiryAt, &d.ArtifactID); err != nil {
+		if err := rows.Scan(&d.ID, &d.DeviceID, &d.Udid, &d.DeviceName, &d.ExpiryAt,
+			&d.SourceArtifactID, &d.SignedArtifactID, &d.AccountID, &d.AppleID); err != nil {
 			s.logger.Warn("expiry guard scan failed", "error", err)
 			continue
 		}
@@ -247,16 +296,20 @@ func (s *Service) expiryGuard(ctx context.Context) (int, error) {
 		expiryDay := d.ExpiryAt.UTC().Format("2006-01-02")
 		key := fmt.Sprintf("refresh-guard:%s:%s", d.ID, expiryDay)
 		params, err := json.Marshal(map[string]any{
-			"deployment_id": d.ID.String(),
-			"udid":          d.Udid,
-			"device_name":   d.DeviceName,
-			"expiry_at":     d.ExpiryAt.UTC().Format(time.RFC3339),
-			"artifact_id":   d.ArtifactID,
+			"deployment_id":              d.ID.String(),
+			"source_artifact_id":         d.SourceArtifactID,
+			"previous_signed_artifact_id": d.SignedArtifactID,
+			"apple_account_id":           d.AccountID,
+			"apple_id":                   d.AppleID,
+			"udid":                       d.Udid,
+			"device_name":                d.DeviceName,
+			"expiry_at":                  d.ExpiryAt.UTC().Format(time.RFC3339),
+			"artifact_id":                d.SourceArtifactID,
 		})
 		if err != nil {
 			continue
 		}
-		job, err := s.jobs.CreateRefresh(ctx, "scheduler", &d.DeviceID, params, key, refreshMaxAttempts)
+		job, err := s.jobs.CreateRefresh(ctx, "scheduler", &d.DeviceID, params, key, refreshMaxAttempts, "refresh")
 		if err != nil {
 			s.logger.Warn("expiry guard job creation failed", "deployment", d.ID, "error", err)
 			continue

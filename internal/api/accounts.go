@@ -340,6 +340,81 @@ func (s *Server) handleAdminDeploy(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type manualRefreshRequest struct {
+	DeploymentID uuid.UUID `json:"deployment_id"`
+	Reason       string    `json:"reason"`
+}
+
+// handleManualRefresh creates a parent refresh job for a deployment,
+// resolving source IPA and Apple account server-side through the
+// installation record. The dashboard sends only the deployment id: it must
+// never select the artifact (stale UI state once picked a signed derivative
+// and corrupted the bundle lineage).
+func (s *Server) handleManualRefresh(w http.ResponseWriter, r *http.Request) {
+	var req manualRefreshRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.DeploymentID == uuid.Nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "deployment_id is required"})
+		return
+	}
+	var (
+		deviceID           uuid.UUID
+		udid, deviceName   string
+		expiryAt           time.Time
+		sourceID           uuid.UUID
+		prevSignedID       uuid.UUID
+		accountID          uuid.UUID
+		appleID            string
+	)
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT dep.device_id, d.udid, COALESCE(d.device_name, ''),
+		       ir.provisioning_expiry_at,
+		       sa.source_artifact_id, ir.signed_artifact_id,
+		       acc.id, acc.label
+		FROM deployments dep
+		JOIN installation_records ir ON ir.deployment_id = dep.id
+		JOIN devices d ON d.id = dep.device_id
+		JOIN signed_artifacts sa ON sa.id = ir.signed_artifact_id
+		JOIN apple_accounts acc ON acc.id = sa.account_id
+		WHERE dep.id = $1`, req.DeploymentID).
+		Scan(&deviceID, &udid, &deviceName, &expiryAt, &sourceID, &prevSignedID,
+			&accountID, &appleID)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "deployment is not linked to a signed artifact and Apple account (re-associate instead of guessing)",
+		})
+		return
+	}
+	params, err := json.Marshal(map[string]any{
+		"deployment_id":               req.DeploymentID.String(),
+		"source_artifact_id":          sourceID.String(),
+		"previous_signed_artifact_id": prevSignedID.String(),
+		"apple_account_id":            accountID.String(),
+		"apple_id":                    appleID,
+		"udid":                        udid,
+		"device_name":                 deviceName,
+		"expiry_at":                   expiryAt.UTC().Format(time.RFC3339),
+		"artifact_id":                 sourceID.String(),
+		"reason":                      req.Reason,
+	})
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "parameter encoding failed")
+		return
+	}
+	job, err := s.jobs.CreateRefresh(r.Context(), "admin", &deviceID, params,
+		"manual:"+uuid.New().String(), 15, "manual_refresh")
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "refresh creation failed")
+		return
+	}
+	s.audit.Record(r.Context(), "admin", "refresh.manual",
+		audit.WithData(map[string]any{"deployment_id": req.DeploymentID, "job_id": job.ID}))
+	writeJSON(w, http.StatusCreated, job)
+}
+
 type liveContainerInstallRequest struct {
 	DeviceID uuid.UUID `json:"device_id"`
 	AppleID  string    `json:"apple_id"`
