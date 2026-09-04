@@ -51,6 +51,8 @@ func (s *Server) DeviceHandler() http.Handler {
 	mux.Handle("POST /api/v1/device/me/devices", d(s.handleReportDevices))
 	mux.Handle("POST /api/v1/device/jobs/claim", d(s.handleClaimJobs))
 	mux.Handle("POST /api/v1/device/jobs/{id}/status", d(s.handleUpdateJob))
+	mux.Handle("GET /api/v1/device/jobs/{id}", d(s.handleDeviceGetJob))
+	mux.Handle("POST /api/v1/device/refresh/{id}/sign", d(s.handleDeviceRefreshSign))
 	mux.Handle("GET /api/v1/device/artifacts/{id}/download", d(s.handleAgentDownloadArtifact))
 	return s.recoverMiddleware(mux)
 }

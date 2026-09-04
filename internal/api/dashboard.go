@@ -135,8 +135,9 @@ func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
 			ORDER BY j.created_at DESC LIMIT 1
 		) j ON true
 		LEFT JOIN LATERAL (
-			SELECT j.parameters->>'artifact_id' AS artifact_id
+			SELECT COALESCE(sa.source_artifact_id::text, j.parameters->>'artifact_id') AS artifact_id
 			FROM jobs j
+			LEFT JOIN signed_artifacts sa ON sa.id = NULLIF(j.parameters->>'artifact_id', '')::uuid
 			WHERE j.device_id = dep.device_id AND j.job_type = 'install'
 			  AND j.state = 'completed'
 			ORDER BY j.created_at DESC LIMIT 1
@@ -144,7 +145,8 @@ func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN LATERAL (
 			SELECT a.filename, a.bundle_identifier
 			FROM artifacts a
-			WHERE a.id = (
+			WHERE a.id = NULLIF(last_install.artifact_id, '')::uuid
+			   OR a.id = (
 				SELECT sa.source_artifact_id FROM signed_artifacts sa
 				WHERE sa.id = NULLIF(last_install.artifact_id, '')::uuid
 			)

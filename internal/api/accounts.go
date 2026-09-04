@@ -283,14 +283,20 @@ func (s *Server) handleAdminDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Select Apple Account (explicit or auto-balance by available slots)
+	// 3. Select Apple Account (explicit or auto-balance by available slots).
+	// A never-fully-authenticated account ('authenticating') must never win
+	// over a proven one: its slot counts are guesses (3 - registered) and a
+	// sign run against it stalls on 2FA/session setup (seen Sep 2026: an
+	// auto-deploy picked the half-enrolled second account and hung the
+	// signing worker until timeout).
 	appleID := strings.TrimSpace(req.AppleID)
 	if appleID == "" || appleID == "auto" {
 		var chosenLabel string
 		err := s.pool.QueryRow(r.Context(), `
 			SELECT label FROM apple_accounts
 			WHERE auth_state IN ('authenticated', 'authenticating')
-			ORDER BY COALESCE(app_id_available_quantity, GREATEST(0, 3 - registered_app_id_count)) DESC, last_auth_at DESC
+			ORDER BY (auth_state = 'authenticated') DESC,
+			         COALESCE(app_id_available_quantity, GREATEST(0, 3 - registered_app_id_count)) DESC, last_auth_at DESC
 			LIMIT 1`).Scan(&chosenLabel)
 		if err == nil && chosenLabel != "" {
 			appleID = chosenLabel
@@ -421,14 +427,15 @@ func (s *Server) handleInstallLiveContainer(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// 3. Resolve Apple Account
+	// 3. Resolve Apple Account (prefer proven-authenticated, see above).
 	appleID := strings.TrimSpace(req.AppleID)
 	if appleID == "" || appleID == "auto" {
 		var chosenLabel string
 		err := s.pool.QueryRow(r.Context(), `
 			SELECT label FROM apple_accounts
 			WHERE auth_state IN ('authenticated', 'authenticating')
-			ORDER BY COALESCE(app_id_available_quantity, GREATEST(0, 3 - registered_app_id_count)) DESC, last_auth_at DESC
+			ORDER BY (auth_state = 'authenticated') DESC,
+			         COALESCE(app_id_available_quantity, GREATEST(0, 3 - registered_app_id_count)) DESC, last_auth_at DESC
 			LIMIT 1`).Scan(&chosenLabel)
 		if err == nil && chosenLabel != "" {
 			appleID = chosenLabel

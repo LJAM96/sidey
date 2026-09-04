@@ -45,6 +45,30 @@ fn storage_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/var/lib/sidey/isideload"))
 }
 
+/// Read the ExpirationDate from an already-signed bundle's
+/// embedded.mobileprovision, for install-only runs.
+fn read_embedded_profile_expiry(bundle_dir: &std::path::Path) -> String {
+    let data = std::fs::read(bundle_dir.join("embedded.mobileprovision"))
+        .expect("pre-signed bundle lacks embedded.mobileprovision");
+    let start = data
+        .windows(6)
+        .position(|w| w == b"<plist")
+        .expect("no plist in embedded.mobileprovision");
+    let end = data
+        .windows(8)
+        .rposition(|w| w == b"</plist>")
+        .expect("unterminated plist in embedded.mobileprovision")
+        + 8;
+    let value: plist::Value =
+        plist::Value::from_reader_xml(&data[start..end]).expect("profile plist parse failed");
+    value
+        .as_dictionary()
+        .and_then(|d| d.get("ExpirationDate"))
+        .and_then(|v| v.as_date())
+        .map(|d| d.to_xml_format())
+        .expect("profile lacks ExpirationDate")
+}
+
 #[tokio::main]
 async fn main() {
     isideload::init().expect("Failed to initialize error reporting");
@@ -169,6 +193,42 @@ async fn main() {
         handshake.services.len()
     );
     let mut provider = rsd_host;
+
+    // Install-only mode (SKIP_SIGN=1): the IPA is already signed (device-
+    // service install jobs carry signed derivatives produced by the signing
+    // worker). Install it as-is and report the embedded profile's expiry.
+    // Never re-sign here: re-signing appends a second team suffix to the
+    // bundle identifier and churns portal App IDs, which broke installs
+    // device-wide (0xe8008015, Sep 2026). No Apple session is needed.
+    if env::var("SKIP_SIGN").as_deref() == Ok("1") {
+        let app = isideload::sideload::application::Application::new(app_path.clone())
+            .unwrap_or_else(|e| panic!("failed to read app bundle: {e:?}"));
+        let bundle_dir = app.bundle.bundle_dir.clone();
+        let signed_bundle_identifier =
+            app.bundle.bundle_identifier().unwrap_or("").to_string();
+        let profile_expiry_at = read_embedded_profile_expiry(&bundle_dir);
+        println!("Installing pre-signed {signed_bundle_identifier} over RSD tunnel...");
+        isideload::sideload::install::install_app_rsd(
+            &mut provider,
+            &mut handshake,
+            &bundle_dir,
+            |progress| println!("Installing: {}%", progress),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("Failed to install app on device over RSD: {e:?}"));
+        println!("TERMINAL INSTALL Complete");
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "ok",
+                "installed": true,
+                "resigned": false,
+                "profile_expiry_at": profile_expiry_at,
+                "signed_bundle_identifier": signed_bundle_identifier,
+            })
+        );
+        return;
+    }
 
     println!("Registering device {} with the team...", device_udid);
     let mut dev_session = dev_session;

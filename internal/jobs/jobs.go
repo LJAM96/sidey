@@ -279,6 +279,13 @@ func (s *Service) CreateRefresh(ctx context.Context, actor string, deviceID *uui
 	return job, nil
 }
 
+// Get returns a single job by id. Used by the device-service refresh
+// orchestrator to follow a sign job it requested.
+func (s *Service) Get(ctx context.Context, jobID uuid.UUID) (*Job, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id = $1`, jobID)
+	return scanJob(row)
+}
+
 func collectUUIDs(rows pgx.Rows) ([]uuid.UUID, error) {
 	defer rows.Close()
 	var ids []uuid.UUID

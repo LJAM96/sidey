@@ -81,8 +81,9 @@ func (s *Service) dueDeployments(ctx context.Context) ([]dueDeployment, error) {
 		JOIN installation_records ir ON ir.deployment_id = dep.id
 		JOIN devices d ON d.id = dep.device_id
 		LEFT JOIN LATERAL (
-			SELECT j.parameters->>'artifact_id' AS artifact_id
+			SELECT COALESCE(sa.source_artifact_id::text, j.parameters->>'artifact_id') AS artifact_id
 			FROM jobs j
+			LEFT JOIN signed_artifacts sa ON sa.id = NULLIF(j.parameters->>'artifact_id', '')::uuid
 			WHERE j.device_id = dep.device_id AND j.job_type = 'install'
 			  AND j.state = 'completed'
 			ORDER BY j.created_at DESC LIMIT 1
@@ -212,8 +213,9 @@ func (s *Service) expiryGuard(ctx context.Context) (int, error) {
 		JOIN installation_records ir ON ir.deployment_id = dep.id
 		JOIN devices d ON d.id = dep.device_id
 		LEFT JOIN LATERAL (
-			SELECT j.parameters->>'artifact_id' AS artifact_id
+			SELECT COALESCE(sa.source_artifact_id::text, j.parameters->>'artifact_id') AS artifact_id
 			FROM jobs j
+			LEFT JOIN signed_artifacts sa ON sa.id = NULLIF(j.parameters->>'artifact_id', '')::uuid
 			WHERE j.device_id = dep.device_id AND j.job_type = 'install'
 			  AND j.state = 'completed'
 			ORDER BY j.created_at DESC LIMIT 1
