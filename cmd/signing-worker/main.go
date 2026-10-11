@@ -248,7 +248,13 @@ type exportP12Params struct {
 	MachineName string `json:"machine_name"`
 }
 
+// getCredentials resolves the Apple account for a job. Selection is strict:
+// a requested account that is not configured is an error (never guess);
+// with no requested account the operator-configured default wins, then a
+// lone configured account; multiple configured accounts with no request is
+// an error. Callers fail the job when this returns empty.
 func getCredentials(cfg config, requestedAppleID string) (appleID, applePassword string) {
+	accounts := make(map[string]string)
 	accountsPaths := []string{
 		filepath.Join(cfg.agentStateDir, "accounts.json"),
 		"/run/sidey/accounts.json",
@@ -256,29 +262,34 @@ func getCredentials(cfg config, requestedAppleID string) (appleID, applePassword
 	}
 	for _, p := range accountsPaths {
 		if data, err := os.ReadFile(p); err == nil {
-			accounts := make(map[string]string)
-			if err := json.Unmarshal(data, &accounts); err == nil && len(accounts) > 0 {
-				if requestedAppleID != "" {
-					if pass, ok := accounts[requestedAppleID]; ok && pass != "" {
-						return requestedAppleID, pass
-					}
-				} else {
-					for id, pass := range accounts {
-						if id != "" && pass != "" {
-							return id, pass
-						}
+			parsed := make(map[string]string)
+			if err := json.Unmarshal(data, &parsed); err == nil {
+				for id, pass := range parsed {
+					if id != "" && pass != "" {
+						accounts[id] = pass
 					}
 				}
 			}
 		}
 	}
-	if requestedAppleID != "" && requestedAppleID == cfg.appleID {
+	if requestedAppleID != "" {
+		if pass, ok := accounts[requestedAppleID]; ok {
+			return requestedAppleID, pass
+		}
+		if requestedAppleID == cfg.appleID && cfg.applePassword != "" {
+			return cfg.appleID, cfg.applePassword
+		}
+		return "", ""
+	}
+	if cfg.appleID != "" && cfg.applePassword != "" {
 		return cfg.appleID, cfg.applePassword
 	}
-	if requestedAppleID != "" && cfg.appleID == "" {
-		return requestedAppleID, cfg.applePassword
+	if len(accounts) == 1 {
+		for id, pass := range accounts {
+			return id, pass
+		}
 	}
-	return cfg.appleID, cfg.applePassword
+	return "", ""
 }
 
 func claimAndRun(cfg config, agentKey string) {
@@ -433,12 +444,16 @@ func runSignJob(cfg config, agentKey, jobID string, deviceID *string, rawParams 
 	// 3. Resolve Apple Account & Sign with signonly.
 	signCfg := cfg
 	appleID, applePassword := getCredentials(cfg, params.AppleID)
-	if appleID != "" {
-		signCfg.appleID = appleID
+	if appleID == "" || applePassword == "" {
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "auth",
+			"no Apple account selected: job names an unknown account, or several are configured and none was requested", nil)
+		encryptState(cfg.stateRuntime, cfg.agentStateDir)
+		close(stopHeartbeat)
+		wg.Wait()
+		return
 	}
-	if applePassword != "" {
-		signCfg.applePassword = applePassword
-	}
+	signCfg.appleID = appleID
+	signCfg.applePassword = applePassword
 
 	signedIPA := filepath.Join(workDir, "signed.ipa")
 	signResult, signErr := runSignonly(signCfg, workDir, sourceIPA, signedIPA, machineName, params.DeviceUdid, params.DeviceName, params.DeviceType, params.SourceURL)
@@ -524,8 +539,8 @@ func runExportP12Job(cfg config, agentKey, jobID string, rawParams json.RawMessa
 
 	appleID, applePassword := getCredentials(cfg, params.AppleID)
 	if appleID == "" || applePassword == "" {
-		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
-			"no Apple credentials configured for export_p12", nil)
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "auth",
+			"no Apple account selected: job names an unknown account, or several are configured and none was requested", nil)
 		return
 	}
 	machineName := params.MachineName
@@ -650,8 +665,8 @@ func runAppIDsJob(cfg config, agentKey, jobID string, rawParams json.RawMessage)
 
 	appleID, applePassword := getCredentials(cfg, params.AppleID)
 	if appleID == "" || applePassword == "" {
-		postJobStatus(cfg, agentKey, jobID, "failed", nil, "other",
-			"no Apple credentials configured for appids", nil)
+		postJobStatus(cfg, agentKey, jobID, "failed", nil, "auth",
+			"no Apple account selected: job names an unknown account, or several are configured and none was requested", nil)
 		return
 	}
 	log.Printf("job %s: appids %s for %s (%d ids)", jobID, params.Action, appleID, len(params.AppIDs))

@@ -155,6 +155,12 @@ class ControlPlane:
                 return "POST", "/api/v1/device/jobs/{id}/status", None
             if intent == "download":
                 return "GET", "/api/v1/device/artifacts/{id}/download", None
+            if intent == "refresh_sign":
+                return "POST", "/api/v1/device/refresh/{id}/sign", None
+            if intent == "ensure_install":
+                return "POST", "/api/v1/device/refresh/{id}/install", None
+            if intent == "job_status":
+                return "GET", "/api/v1/device/jobs/{id}", None
         if intent == "health":
             return "GET", "/api/v1/healthz", None
         if intent == "heartbeat":
@@ -296,6 +302,25 @@ class ControlPlane:
         _, blob = self.request("download", sub=artifact_id, timeout=600, raw=True)
         return blob
 
+    def refresh_sign(self, refresh_id):
+        """Ask the control plane to sign the refresh job's source IPA.
+
+        Idempotent per refresh job: retries return the same sign job."""
+        _, resp = self.request("refresh_sign", sub=refresh_id, timeout=60)
+        return resp or {}
+
+    def ensure_install(self, refresh_id):
+        """Ensure the sign's install child exists and take it claimed.
+
+        A failed install is requeued (reusing the signed artifact) rather
+        than duplicated; an already-completed one is returned as-is."""
+        _, resp = self.request("ensure_install", sub=refresh_id, timeout=60)
+        return resp or {}
+
+    def job_status(self, job_id):
+        _, resp = self.request("job_status", sub=job_id, timeout=30)
+        return resp or {}
+
 
 class _UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, socket_path, timeout=30):
@@ -385,7 +410,7 @@ def _job_target(job):
     return platform_name, udid, ip, port, params
 
 
-def _wrapper_for(platform_name, wrapper, ipa, udid, ip, port):
+def _wrapper_for(platform_name, wrapper, ipa, udid, ip, port, job_type=""):
     env = dict(os.environ)
     cmd = [wrapper]
     if ipa:
@@ -398,6 +423,12 @@ def _wrapper_for(platform_name, wrapper, ipa, udid, ip, port):
     else:
         env["DEVICE_UDID"] = udid or DEVICE_UDID
         env["DEVICE_IP"] = ip or DEVICE_IP
+        # Install jobs carry already-signed derivatives from the signing
+        # worker: install them as-is. Re-signing here appends a second team
+        # suffix and churns portal App IDs (0xe8008015 outage, Sep 2026).
+        # Refresh/verify jobs carry source IPAs and still sign+install.
+        if job_type == "install":
+            env["SKIP_SIGN"] = "1"
     return cmd, env
 
 
@@ -438,6 +469,183 @@ def _extract_expiry(captured):
     return None
 
 
+def _fail_refresh(cp, job_id, stage, child_id, category, details):
+    """Fail a refresh parent with staged taxonomy: which stage failed, the
+    child job that failed, and the child's own error category (auth and
+    friends go dead for attention; tunnel/device failures stay retryable)."""
+    try:
+        cp.update(job_id, "failed", error_category=category,
+                  error_details=f"[{stage}] {details}"[-2000:],
+                  result={"failed_stage": stage, "child_job_id": child_id,
+                          "error_category": category})
+    except Exception as exc:
+        log(f"job {job_id}: status update failed: {exc}")
+
+
+def _run_refresh_ios(cp, job, cache_dir):
+    """Refresh parent coordination: sign child, then install child.
+
+    The sign step runs in the signing worker (this host must never see Apple
+    credentials); the install step runs as an explicit claimed install job
+    executed inline, because the daemon loop is single-threaded and cannot
+    poll one job while executing another. The installer never re-signs:
+    re-signing a derivative appends a second team suffix and churns portal
+    App IDs (0xe8008015 outage, Sep 2026)."""
+    job_id = job["id"]
+    platform_name, udid, ip, port, params = _job_target(job)
+    source_id = params.get("source_artifact_id") or params.get("artifact_id") or ""
+    log(f"job {job_id}: starting refresh orchestration (ios udid={udid or '?'})")
+    cp.update(job_id, "in_progress", progress=0)
+    if not source_id:
+        _fail_refresh(cp, job_id, "schedule", "", "other",
+                      "refresh job carries no source artifact_id (refusing to guess)")
+        return
+
+    progress = {"value": 5}
+    stop = threading.Event()
+    started = time.time()
+
+    def heartbeat():
+        while not stop.wait(HEARTBEAT_SECONDS):
+            try:
+                cp.update(job_id, "in_progress", progress=progress["value"])
+            except Exception as exc:
+                log(f"heartbeat failed: {exc}")
+
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    thread.start()
+    try:
+        # 1. Ensure the sign child exists (idempotent per refresh job: a
+        # completed sign is reused, never re-run).
+        try:
+            resp = cp.refresh_sign(job_id)
+        except Exception as exc:
+            _fail_refresh(cp, job_id, "sign", "", "other", f"sign request failed: {exc}")
+            return
+        sign_id = resp.get("sign_job_id", "")
+        if not sign_id:
+            _fail_refresh(cp, job_id, "sign", "", "other",
+                          f"sign request returned no sign_job_id: {resp}")
+            return
+        log(f"job {job_id}: sign job {sign_id}")
+
+        # 2. Wait for the signing worker.
+        deadline = started + int(os.environ.get("SIDEY_REFRESH_TIMEOUT", "2700"))
+        signed_id = ""
+        while time.time() < deadline:
+            time.sleep(30)
+            st = cp.job_status(sign_id)
+            state = st.get("state", "")
+            if state == "completed":
+                result = st.get("result") or {}
+                if isinstance(result, str):
+                    result = json.loads(result)
+                signed_id = result.get("signed_artifact_id", "")
+                if not signed_id:
+                    _fail_refresh(cp, job_id, "sign", sign_id, "other",
+                                  f"sign job completed without signed_artifact_id: {result}")
+                    return
+                break
+            if state in ("failed", "dead"):
+                _fail_refresh(cp, job_id, "sign", sign_id,
+                              st.get("error_category") or "sign_failed",
+                              st.get("error_details") or f"sign job {state}")
+                return
+        if not signed_id:
+            _fail_refresh(cp, job_id, "sign", sign_id, "other",
+                          "timed out waiting for the signing worker")
+            return
+        progress["value"] = 50
+        log(f"job {job_id}: signed derivative {signed_id}")
+
+        # 3. Ensure + claim the install child (deterministic per
+        # refresh+signed pair; a failed install is requeued, reusing the
+        # signed artifact instead of signing again).
+        try:
+            child = cp.ensure_install(job_id)
+        except Exception as exc:
+            _fail_refresh(cp, job_id, "install", "", "other",
+                          f"install request failed: {exc}")
+            return
+        install_id = child.get("id", "")
+        if not install_id:
+            _fail_refresh(cp, job_id, "install", "", "other",
+                          f"install request returned no job: {child}")
+            return
+        if child.get("state") == "completed":
+            result = child.get("result") or {}
+            if isinstance(result, str):
+                result = json.loads(result)
+            _complete_refresh(cp, job_id, signed_id, install_id, result)
+            return
+        log(f"job {job_id}: install job {install_id}")
+
+        # 4. Install-only: the derivative is already signed.
+        if not _wait_for_rsd_endpoint(120):
+            _fail_install(cp, install_id, "rsd_unavailable",
+                          "RSD tunnel is not up (check sidey-wireless-tunnel.service)")
+            _fail_refresh(cp, job_id, "install", install_id, "rsd_unavailable",
+                          "RSD tunnel is not up (check sidey-wireless-tunnel.service)")
+            return
+        ipa = _download_ipa(cp, cache_dir, signed_id)
+        cmd, env = _wrapper_for(platform_name, IOS_INSTALL_WRAPPER,
+                                ipa, udid, ip, port, "install")
+        # Pause our heartbeat while the wrapper keeps the install lease itself.
+        stop.set()
+        thread.join(timeout=2)
+        rc, captured, duration, timed_out = _run_wrapper(cp, install_id, cmd, env)
+        _report(cp, install_id, rc, captured, duration, timed_out)
+        if rc != 0:
+            st = cp.job_status(install_id)
+            _fail_refresh(cp, job_id, "install", install_id,
+                          st.get("error_category") or "install_failed",
+                          st.get("error_details") or f"installer exited {rc}")
+            return
+        expiry = _extract_expiry(captured)
+        _complete_refresh(cp, job_id, signed_id, install_id, {
+            "verified": True, "duration_seconds": duration,
+            "profile_expiry_at": expiry,
+        })
+    except Exception as exc:
+        log(f"job {job_id}: refresh orchestration failed: {exc}")
+        _fail_refresh(cp, job_id, "orchestrate", "", "other", str(exc))
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+
+
+def _fail_install(cp, install_id, category, details):
+    try:
+        cp.update(install_id, "failed", error_category=category,
+                  error_details=details[-2000:])
+    except Exception as exc:
+        log(f"install {install_id}: status update failed: {exc}")
+
+
+def _download_ipa(cp, cache_dir, artifact_id):
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    blob = cp.download(artifact_id)
+    path = cache_dir / f"{artifact_id}.ipa"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(blob)
+    os.replace(tmp, path)
+    return str(path)
+
+
+def _complete_refresh(cp, job_id, signed_id, install_id, result):
+    """Complete a refresh parent, recording the exact derivative installed
+    so the installation record becomes authoritative for the next cycle."""
+    if not isinstance(result, dict):
+        result = {}
+    result = dict(result)
+    result["signed_artifact_id"] = signed_id
+    result["install_job_id"] = install_id
+    try:
+        cp.update(job_id, "completed", progress=100, result=result)
+    except Exception as exc:
+        log(f"job {job_id}: status update failed: {exc}")
+
+
 def run_intent(cp, job, cache_dir):
     job_id = job["id"]
     job_type = job.get("job_type", "")
@@ -475,8 +683,28 @@ def run_intent(cp, job, cache_dir):
         _report(cp, job_id, rc, captured, duration, timed_out)
         return
 
+    # iOS refresh goes through the signing worker (orchestrated sign +
+    # install-only); tvOS refresh keeps its delegated reinstall path, and
+    # remote nodes (no socket endpoints) keep the legacy monolithic wrapper.
+    if job_type == "refresh" and platform_name != "tvos" and not cp.remote:
+        _run_refresh_ios(cp, job, cache_dir)
+        return
+
     log(f"job {job_id}: starting {job_type} ({platform_name} udid={udid or '?'})")
     cp.update(job_id, "in_progress", progress=0)
+
+    # iOS needs the wireless RSD tunnel, whose systemd unit can report active
+    # while the RemotePairing session is dead (stale endpoint file). Probe the
+    # socket and restart once before running the wrapper, like the
+    # livecontainer_push/installed_apps paths do — otherwise every refresh
+    # burns a retry on "Tunnel did not come up" (seen Sep 2026: 5x fail on one
+    # job, another dead after 15). tvOS brings its own tunnel in tvos-lib.sh.
+    if platform_name != "tvos" and job_type in ("install", "verify", "refresh"):
+        if not _wait_for_rsd_endpoint(120):
+            log(f"job {job_id}: RSD tunnel is not up (check sidey-wireless-tunnel.service)")
+            cp.update(job_id, "failed", error_category="install_failed",
+                      error_details="RSD tunnel is not up (check sidey-wireless-tunnel.service)")
+            return
 
     try:
         ipa = _resolve_ipa(cp, job, cache_dir)
@@ -485,7 +713,7 @@ def run_intent(cp, job, cache_dir):
             ipa = cfg_ipa or None
         cmd, env = _wrapper_for(platform_name,
                                 IOS_INSTALL_WRAPPER if platform_name == "ios" else TVOS_INSTALL_WRAPPER,
-                                ipa or "", udid, ip, port)
+                                ipa or "", udid, ip, port, job_type)
         rc, captured, duration, timed_out = _run_wrapper(cp, job_id, cmd, env)
     except Exception as exc:
         log(f"job {job_id}: execution failed: {exc}")

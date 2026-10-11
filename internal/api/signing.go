@@ -484,7 +484,17 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 		fail(http.StatusInternalServerError, "signed artifact insert failed")
 		return
 	}
-	// Enqueue install job for the device service
+	// Enqueue install job for the device service. When the sign job belongs
+	// to a refresh workflow, the install child is linked to the refresh
+	// parent with a deterministic key (refresh-install:<refresh>:<signed>)
+	// so the orchestrator finds exactly one install and retries requeue it
+	// instead of duplicating it. Standalone signs keep the legacy behaviour.
+	var signParent *uuid.UUID
+	var signPurpose *string
+	var signParamsRaw json.RawMessage
+	_ = s.pool.QueryRow(r.Context(),
+		`SELECT parent_job_id, purpose, parameters FROM jobs WHERE id = $1`, req.JobID).
+		Scan(&signParent, &signPurpose, &signParamsRaw)
 	installParams := map[string]any{
 		"artifact_id":   signedID.String(),
 		"device_udid":   deviceUdid,
@@ -492,11 +502,26 @@ func (s *Server) handleUploadSignedArtifact(w http.ResponseWriter, r *http.Reque
 		"bundle_id":     signedBundleID,
 		"source_job_id": req.JobID.String(),
 	}
+	installKey := uuid.New().String()
+	if signParent != nil {
+		var signParams struct {
+			RefreshJobID *uuid.UUID `json:"refresh_job_id"`
+			DeploymentID *uuid.UUID `json:"deployment_id"`
+		}
+		if err := json.Unmarshal(signParamsRaw, &signParams); err == nil && signParams.RefreshJobID != nil {
+			installParams["refresh_job_id"] = signParams.RefreshJobID.String()
+			if signParams.DeploymentID != nil {
+				installParams["deployment_id"] = signParams.DeploymentID.String()
+			}
+			installParams["signed_artifact_id"] = signedID.String()
+			installKey = fmt.Sprintf("refresh-install:%s:%s", signParams.RefreshJobID, signedID)
+		}
+	}
 	_, _ = tx.Exec(r.Context(), `
-		INSERT INTO jobs (job_type, device_id, parameters, max_attempts, idempotency_key)
-		VALUES ('install', $1, $2, 3, $3)
+		INSERT INTO jobs (job_type, device_id, parameters, max_attempts, idempotency_key, parent_job_id, purpose)
+		VALUES ('install', $1, $2, 3, $3, $4, $5)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
-		req.DeviceID, installParams, uuid.New().String())
+		req.DeviceID, installParams, installKey, signParent, signPurpose)
 
 	// The signed-derivative record is security sensitive (it is the artifact
 	// that gets installed on devices); its audit event commits in the same

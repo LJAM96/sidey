@@ -382,6 +382,13 @@ func TestJobTypesClaimScopedToOwnDevices(t *testing.T) {
 	truncate(t)
 	_, apiKeyA := enrolAgent(t, "edge-a")
 	_, apiKeyB := enrolAgent(t, "edge-b")
+	// Both agents act as refresh agents: the test is about device scoping
+	// (an agent only gets its own devices' jobs), not role rejection.
+	for _, name := range []string{"edge-a", "edge-b"} {
+		if _, err := pool.Exec(t.Context(), `UPDATE agents SET role = 'refresh_agent' WHERE name = $1`, name); err != nil {
+			t.Fatal(err)
+		}
+	}
 	deviceA := reportDevice(t, apiKeyA, "00008120-0000000000000701")
 
 	// Refresh job for agent A's device.

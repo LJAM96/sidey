@@ -200,3 +200,166 @@ func TestDeviceServiceEmptyDeviceReporting(t *testing.T) {
 		t.Fatalf("expected 0 devices in database, got %d", count)
 	}
 }
+
+// TestDeviceRefreshWorkflow covers the refresh parent orchestration over the
+// device socket: sign ensure is idempotent per refresh, signed derivatives
+// are rejected as refresh inputs, and the install child is created once
+// (deterministic key) then requeued — never duplicated — across retries.
+func TestDeviceRefreshWorkflow(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+
+	deviceDo(t, "GET", "/api/v1/device/me", nil)
+	nodeID := sentinelAgentID(t)
+	if nodeID == nil {
+		t.Fatal("device service node not provisioned")
+	}
+	deviceDo(t, "POST", "/api/v1/device/me/devices", map[string]any{
+		"devices": []map[string]any{{
+			"udid": "00008120-0000000000000902", "platform": "ios",
+			"device_name": "refresh phone", "model": "iPhone15,2",
+			"os_version": "27.0", "pairing_status": "paired",
+		}},
+	})
+	var deviceID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM devices WHERE udid = '00008120-0000000000000902'`).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	sourceID, _ := newApprovedArtifactWithBundle(t, "com.example.Refresh")
+
+	var accountID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO apple_accounts (label, team_identifier, auth_state)
+		 VALUES ('refresh-acct@example.com', 'REFRESHTEAM', 'authenticated')
+		 RETURNING id`).Scan(&accountID); err != nil {
+		t.Fatal(err)
+	}
+	var appID, chanID, depID, signedID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO applications (name) VALUES ('RefreshApp') RETURNING id`).Scan(&appID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO application_channels (application_id, platform) VALUES ($1, 'ios') RETURNING id`,
+		appID).Scan(&chanID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO deployments (device_id, channel_id) VALUES ($1, $2) RETURNING id`,
+		deviceID, chanID).Scan(&depID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO signed_artifacts (source_artifact_id, device_id, account_id,
+			signed_bundle_identifier, profile_expiry_at, signed_ipa_sha256)
+		VALUES ($1, $2, $3, 'com.example.Refresh.REFRESHTEAM', now() + interval '7 days', 'abc')
+		RETURNING id`, sourceID, deviceID, accountID).Scan(&signedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO installation_records (deployment_id, provisioning_expiry_at,
+			signed_artifact_id, installed_version)
+		VALUES ($1, now() + interval '7 days', $2, '1.0')`, depID, signedID); err != nil {
+		t.Fatal(err)
+	}
+
+	newRefresh := func(key string, extra map[string]any) uuid.UUID {
+		t.Helper()
+		paramsMap := map[string]any{
+			"deployment_id": depID.String(), "source_artifact_id": sourceID.String(),
+			"apple_id": "refresh-acct@example.com", "artifact_id": sourceID.String(),
+			"udid": "00008120-0000000000000902",
+		}
+		for k, v := range extra {
+			if v == nil {
+				delete(paramsMap, k)
+			} else {
+				paramsMap[k] = v
+			}
+		}
+		params, _ := json.Marshal(paramsMap)
+		var id uuid.UUID
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO jobs (job_type, device_id, parameters, idempotency_key,
+				state, claimed_by, purpose)
+			VALUES ('refresh', $1, $2, $3, 'claimed', $4, 'refresh')
+			RETURNING id`, deviceID, params, key, *nodeID).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	refreshID := newRefresh("test-refresh-1", nil)
+
+	// Sign ensure returns a sign job, idempotently.
+	res, body := deviceDo(t, "POST", "/api/v1/device/refresh/"+refreshID.String()+"/sign", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("refresh sign: %d %v", res.StatusCode, body)
+	}
+	signID, _ := uuid.Parse(body["sign_job_id"].(string))
+	if body["apple_id"] != "refresh-acct@example.com" {
+		t.Fatalf("expected threaded apple id, got %v", body)
+	}
+	res, body2 := deviceDo(t, "POST", "/api/v1/device/refresh/"+refreshID.String()+"/sign", nil)
+	if res.StatusCode != http.StatusOK || body2["sign_job_id"] != body["sign_job_id"] {
+		t.Fatalf("sign ensure not idempotent: %d %v", res.StatusCode, body2)
+	}
+
+	// A signed derivative as refresh input is rejected, not re-signed.
+	// (Legacy poisoned shape: artifact_id only, no source_artifact_id.)
+	badRefresh := newRefresh("test-refresh-2", map[string]any{
+		"source_artifact_id": nil, "artifact_id": signedID.String(),
+	})
+	res, body = deviceDo(t, "POST", "/api/v1/device/refresh/"+badRefresh.String()+"/sign", nil)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("derivative refresh input should be rejected: %d %v", res.StatusCode, body)
+	}
+
+	// Complete the sign with a worker-style result, then the install child
+	// is created once, claimed, and stable across calls.
+	if _, err := pool.Exec(ctx,
+		`UPDATE jobs SET state = 'completed',
+		 result = $2 WHERE id = $1`,
+		signID, `{"signed_artifact_id": "`+signedID.String()+`"}`); err != nil {
+		t.Fatal(err)
+	}
+	res, install := deviceDo(t, "POST", "/api/v1/device/refresh/"+refreshID.String()+"/install", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("ensure install: %d %v", res.StatusCode, install)
+	}
+	installID, _ := uuid.Parse(install["id"].(string))
+	if install["state"] != "claimed" {
+		t.Fatalf("install child should be claimed, got %v", install["state"])
+	}
+	if install["parent_job_id"] != refreshID.String() {
+		t.Fatalf("install child missing parent link: %v", install)
+	}
+	res, install2 := deviceDo(t, "POST", "/api/v1/device/refresh/"+refreshID.String()+"/install", nil)
+	if res.StatusCode != http.StatusOK || install2["id"] != install["id"] {
+		t.Fatalf("install ensure not stable: %d %v", res.StatusCode, install2)
+	}
+
+	// A failed install is requeued under the same id, never duplicated.
+	res, _ = deviceDo(t, "POST", "/api/v1/device/jobs/"+installID.String()+"/status", map[string]any{
+		"state": "failed", "error_category": "install_failed", "error_details": "tunnel down",
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("fail install: %d", res.StatusCode)
+	}
+	res, install3 := deviceDo(t, "POST", "/api/v1/device/refresh/"+refreshID.String()+"/install", nil)
+	if res.StatusCode != http.StatusOK || install3["id"] != install["id"] {
+		t.Fatalf("failed install not requeued under same id: %d %v", res.StatusCode, install3)
+	}
+	if install3["state"] != "claimed" {
+		t.Fatalf("requeued install should be claimed, got %v", install3["state"])
+	}
+	var installCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM jobs WHERE parent_job_id = $1 AND job_type = 'install'`,
+		refreshID).Scan(&installCount); err != nil {
+		t.Fatal(err)
+	}
+	if installCount != 1 {
+		t.Fatalf("expected exactly 1 install child, got %d", installCount)
+	}
+}

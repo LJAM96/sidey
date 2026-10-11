@@ -28,7 +28,8 @@ Environment=SIDEY_POLL_SECONDS=30
 Environment=SIDEY_HEARTBEAT_SECONDS=60
 # Per-job deadline: a dead tunnel hangs the installer (no socket timeouts),
 # so the daemon kills the wrapper and fails the job; the retry loop re-queues.
-Environment=SIDEY_JOB_TIMEOUT=1200
+# 30 minutes: a 106M pure install over the tailnet measured ~16 minutes.
+Environment=SIDEY_JOB_TIMEOUT=1800
 Restart=on-failure
 RestartSec=10
 Group=sidey

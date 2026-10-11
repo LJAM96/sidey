@@ -53,7 +53,7 @@ func TestInspectSignedValid(t *testing.T) {
 
 func TestInspectSignedRejectsMissingProvision(t *testing.T) {
 	// An IPA without embedded.mobileprovision must be rejected by InspectSigned
-	data := testIPABytes("com.example.noprov", "iPhoneOS")
+	data := testIPAWithoutProvision("com.example.noprov")
 	tmp := filepath.Join(t.TempDir(), "noprov.ipa")
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -63,6 +63,38 @@ func TestInspectSignedRejectsMissingProvision(t *testing.T) {
 	if !errors.Is(err, ErrMalformedSignedIPA) {
 		t.Errorf("expected ErrMalformedSignedIPA, got %v", err)
 	}
+}
+
+// testIPAWithoutProvision builds an IPA with an Info.plist but deliberately
+// no embedded.mobileprovision.
+func testIPAWithoutProvision(bundleID string) []byte {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	infoPlist := `<?xml version="1.0"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>` + bundleID + `</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>MinimumOSVersion</key><string>14.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+</dict></plist>`
+	for name, content := range map[string][]byte{
+		path.Join("Payload/Test.app", "Info.plist"): []byte(infoPlist),
+		path.Join("Payload/Test.app", "Test"):       []byte("executable-binary-bytes"),
+	} {
+		w, err := zw.Create(name)
+		if err != nil {
+			panic(err)
+		}
+		if _, err := w.Write(content); err != nil {
+			panic(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
 }
 
 func testIPABytes(bundleID, sdkPlatform string) []byte {
