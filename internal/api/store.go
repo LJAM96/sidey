@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,6 +24,10 @@ type StoreSource struct {
 	URL       string `json:"url"`  // URL or "owner/repo"
 	Name      string `json:"name"`
 	IsDefault bool   `json:"is_default"`
+	// ExpectedID pins the feed's `identifier` when set: a fetched catalog
+	// whose identifier is present and different is skipped outright (cheap
+	// tamper-evidence against silent feed swaps).
+	ExpectedID string `json:"expected_id,omitempty"`
 }
 
 type AppVersion struct {
@@ -38,9 +44,10 @@ type StoreApp struct {
 	Name        string       `json:"name"`
 	Developer   string       `json:"developer"`
 	Description string       `json:"description"`
-	IconURL     string       `json:"icon_url"`
-	Source      string       `json:"source"`
-	SourceType  string       `json:"source_type"`
+	IconURL     string `json:"icon_url"`
+	Source      string `json:"source"`
+	SourceType  string `json:"source_type"`
+	SourceID    string `json:"source_id"`
 	Versions    []AppVersion `json:"versions"`
 
 	// Convenience top-level fields (defaults to primary/stable version)
@@ -60,6 +67,16 @@ var defaultSources = []StoreSource{
 		URL:       "https://apps.altstore.io",
 		Name:      "AltStore Official",
 		IsDefault: true,
+	},
+	{
+		// Aggregated catalog: 160+ public sources, deduped, newest wins.
+		// Rebuilt upstream every 6h; identifier pinned (see ExpectedID).
+		ID:         "src-accretion-core",
+		Type:       "altstore",
+		URL:        "https://getaccretion.github.io/curated.json",
+		Name:       "Accretion Core",
+		IsDefault:  true,
+		ExpectedID: "io.github.benwilllopez.accretion.curated",
 	},
 	{
 		ID:        "src-spotcompiled",
@@ -264,6 +281,10 @@ func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
 			req.Name = req.URL
 		}
 	} else {
+		if !strings.HasPrefix(strings.ToLower(req.URL), "https://") {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "altstore source url must be https"})
+			return
+		}
 		req.URL = strings.ReplaceAll(req.URL, " ", "%20")
 		if req.Name == "" {
 			req.Name = req.URL
@@ -328,7 +349,7 @@ func (s *Server) handleDeleteStoreSource(w http.ResponseWriter, r *http.Request)
 }
 
 // getStoreApps returns aggregated, unified apps from all sources (cached for 10 minutes).
-func (s *Server) getStoreApps() []StoreApp {
+func (s *Server) getStoreApps(ctx context.Context) []StoreApp {
 	globalStoreCache.RLock()
 	if len(globalStoreCache.apps) > 0 && time.Since(globalStoreCache.updatedAt) < 10*time.Minute {
 		cached := globalStoreCache.apps
@@ -356,6 +377,9 @@ func (s *Server) getStoreApps() []StoreApp {
 				apps = fetchAltStoreApps(client, src)
 			}
 			if len(apps) > 0 {
+				for i := range apps {
+					apps[i].SourceID = src.ID
+				}
 				mu.Lock()
 				allApps = append(allApps, apps...)
 				mu.Unlock()
@@ -369,13 +393,347 @@ func (s *Server) getStoreApps() []StoreApp {
 	globalStoreCache.updatedAt = time.Now()
 	globalStoreCache.Unlock()
 
+	s.snapshotListings(ctx, allApps)
+
 	return allApps
 }
 
 // handleListStoreApps fetches and returns aggregated, unified apps from all sources.
 func (s *Server) handleListStoreApps(w http.ResponseWriter, r *http.Request) {
-	apps := s.getStoreApps()
+	apps := s.getStoreApps(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"apps": apps})
+}
+
+// snapshotListings persists the newest listing per (source, bundle ID) for
+// update detection. Snapshots only; nothing is downloaded or installed.
+// A snapshot failure is logged but never breaks listing.
+func (s *Server) snapshotListings(ctx context.Context, apps []StoreApp) {
+	for _, a := range apps {
+		if a.BundleID == "" || a.DownloadURL == "" {
+			continue
+		}
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO app_source_listings (source_id, bundle_id, name, latest_version, latest_download_url, latest_size, latest_updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (source_id, bundle_id) DO UPDATE SET
+				name = EXCLUDED.name,
+				latest_version = EXCLUDED.latest_version,
+				latest_download_url = EXCLUDED.latest_download_url,
+				latest_size = EXCLUDED.latest_size,
+				latest_updated_at = EXCLUDED.latest_updated_at,
+				seen_at = now()`,
+			a.SourceID, a.BundleID, a.Name, a.Version, a.DownloadURL, a.Size, a.UpdatedDate); err != nil {
+			s.logger.Warn("source snapshot failed", "source", a.SourceID, "bundle", a.BundleID, "error", err)
+			continue
+		}
+	}
+}
+
+// SnapshotSources refreshes the catalog and persists listing snapshots.
+// Safe to call periodically; the 10-minute fetch cache bounds upstream traffic.
+func (s *Server) SnapshotSources(ctx context.Context) int {
+	return len(s.getStoreApps(ctx))
+}
+
+// handleListUpdates compares deployed versions against catalog snapshots and
+// reports deployments with a newer version available. Detection only: the
+// operator imports (quarantine) and deploys explicitly via existing flows.
+func (s *Server) handleListUpdates(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rows, err := s.pool.Query(ctx, `
+		SELECT dep.id, dep.device_id, COALESCE(d.device_name, ''),
+		       a.bundle_identifier, COALESCE(a.version, '')
+		FROM deployments dep
+		JOIN devices d ON d.id = dep.device_id
+		JOIN installation_records ir ON ir.deployment_id = dep.id AND ir.signed_artifact_id IS NOT NULL
+		JOIN signed_artifacts sa ON sa.id = ir.signed_artifact_id
+		JOIN artifacts a ON a.id = sa.source_artifact_id
+		WHERE a.bundle_identifier IS NOT NULL AND a.bundle_identifier <> ''`)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "deployed versions lookup failed")
+		return
+	}
+	type deployed struct {
+		deploymentID uuid.UUID
+		deviceID     uuid.UUID
+		deviceName   string
+		bundleID     string
+		version      string
+	}
+	var deps []deployed
+	for rows.Next() {
+		var d deployed
+		if err := rows.Scan(&d.deploymentID, &d.deviceID, &d.deviceName, &d.bundleID, &d.version); err != nil {
+			rows.Close()
+			s.writeError(w, http.StatusInternalServerError, "deployed versions scan failed")
+			return
+		}
+		deps = append(deps, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "deployed versions lookup failed")
+		return
+	}
+	if len(deps) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"updates": []any{}})
+		return
+	}
+
+	bundles := make([]string, 0, len(deps))
+	seen := map[string]bool{}
+	for _, d := range deps {
+		if !seen[d.bundleID] {
+			seen[d.bundleID] = true
+			bundles = append(bundles, d.bundleID)
+		}
+	}
+	snapRows, err := s.pool.Query(ctx, `
+		SELECT bundle_id, name, latest_version, latest_download_url, latest_size, latest_updated_at, source_id
+		FROM app_source_listings WHERE bundle_id = ANY($1)`, bundles)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "snapshot lookup failed")
+		return
+	}
+	type snap struct {
+		name, version, url, updated, sourceID string
+		size                                  int64
+	}
+	best := map[string]snap{}
+	for snapRows.Next() {
+		var bundle, name, version, url, updated, sourceID string
+		var size int64
+		if err := snapRows.Scan(&bundle, &name, &version, &url, &size, &updated, &sourceID); err != nil {
+			snapRows.Close()
+			s.writeError(w, http.StatusInternalServerError, "snapshot scan failed")
+			return
+		}
+		if cur, ok := best[bundle]; !ok || compareVersions(version, cur.version) > 0 {
+			best[bundle] = snap{name, version, url, updated, sourceID, size}
+		}
+	}
+	snapRows.Close()
+	if err := snapRows.Err(); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "snapshot lookup failed")
+		return
+	}
+
+	sourceNames := map[string]string{}
+	for _, src := range s.loadStoreSources() {
+		sourceNames[src.ID] = src.Name
+	}
+	updates := []any{}
+	for _, d := range deps {
+		sn, ok := best[d.bundleID]
+		if !ok || compareVersions(sn.version, d.version) <= 0 {
+			continue
+		}
+		updates = append(updates, map[string]any{
+			"kind":                "deployment",
+			"deployment_id":       d.deploymentID.String(),
+			"device_id":           d.deviceID.String(),
+			"device_name":         d.deviceName,
+			"bundle_id":           d.bundleID,
+			"current_version":     d.version,
+			"latest_version":      sn.version,
+			"latest_download_url": sn.url,
+			"latest_size":         sn.size,
+			"latest_updated_at":   sn.updated,
+			"source_id":           sn.sourceID,
+			"source_name":         sourceNames[sn.sourceID],
+			"app_name":            sn.name,
+		})
+	}
+	// Subscriptions: watched bundles that are not necessarily deployed.
+	// An entry surfaces when the snapshot is newer than the version seen
+	// at subscribe time (or when it first appears, if unknown then).
+	subRows, err := s.pool.Query(ctx, `SELECT bundle_id, name, COALESCE(seen_version, '') FROM app_subscriptions`)
+	if err == nil {
+		for subRows.Next() {
+			var bundle, name, seen string
+			if err := subRows.Scan(&bundle, &name, &seen); err != nil {
+				break
+			}
+			sn, ok := best[bundle]
+			if !ok {
+				// Not in the current snapshot set (snapshot query was
+				// scoped to deployed bundles); take the best row directly.
+				snapRows2, err := s.pool.Query(ctx, `
+					SELECT name, latest_version, latest_download_url, latest_size, latest_updated_at, source_id
+					FROM app_source_listings WHERE bundle_id = $1`, bundle)
+				if err != nil {
+					continue
+				}
+				for snapRows2.Next() {
+					var n, v, u, up, sid string
+					var sz int64
+					if err := snapRows2.Scan(&n, &v, &u, &sz, &up, &sid); err != nil {
+						break
+					}
+					if !ok || compareVersions(v, sn.version) > 0 {
+						sn, ok = snap{n, v, u, up, sid, sz}, true
+					}
+				}
+				snapRows2.Close()
+				if !ok {
+					continue
+				}
+			}
+			if seen != "" && compareVersions(sn.version, seen) <= 0 {
+				continue
+			}
+			if sn.url == "" {
+				continue
+			}
+			updates = append(updates, map[string]any{
+				"kind":                "subscription",
+				"bundle_id":           bundle,
+				"current_version":     seen,
+				"latest_version":      sn.version,
+				"latest_download_url": sn.url,
+				"latest_size":         sn.size,
+				"latest_updated_at":   sn.updated,
+				"source_id":           sn.sourceID,
+				"source_name":         sourceNames[sn.sourceID],
+				"app_name":            sn.name,
+			})
+		}
+		subRows.Close()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updates": updates})
+}
+
+// handleListSubscriptions returns watched bundle IDs.
+func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT bundle_id, name, COALESCE(seen_version, ''), created_at
+		FROM app_subscriptions ORDER BY created_at`)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "subscriptions lookup failed")
+		return
+	}
+	defer rows.Close()
+	subs := []any{}
+	for rows.Next() {
+		var bundle, name, seen string
+		var created time.Time
+		if err := rows.Scan(&bundle, &name, &seen, &created); err != nil {
+			continue
+		}
+		subs = append(subs, map[string]any{
+			"bundle_id": bundle, "name": name, "seen_version": seen,
+			"created_at": created.UTC().Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subscriptions": subs})
+}
+
+// handleAddSubscription watches a bundle ID. The version seen is the
+// current snapshot best (or empty when unknown); only newer snapshots
+// surface as updates afterwards.
+func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BundleID string `json:"bundle_id"`
+		Name     string `json:"name"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	req.BundleID = strings.TrimSpace(req.BundleID)
+	if req.BundleID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bundle_id is required"})
+		return
+	}
+	ctx := r.Context()
+	var seen, name string
+	_ = s.pool.QueryRow(ctx, `
+		SELECT latest_version, name FROM app_source_listings
+		WHERE bundle_id = $1 ORDER BY seen_at DESC LIMIT 1`,
+		req.BundleID).Scan(&seen, &name)
+	if req.Name != "" {
+		name = req.Name
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO app_subscriptions (bundle_id, name, seen_version)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (bundle_id) DO UPDATE SET name = EXCLUDED.name`,
+		req.BundleID, name, seen); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "subscription save failed")
+		return
+	}
+	s.audit.Record(ctx, "admin", "store_subscription.added", audit.WithData(map[string]any{
+		"bundle_id": req.BundleID, "seen_version": seen,
+	}))
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"bundle_id": req.BundleID, "name": name, "seen_version": seen,
+	})
+}
+
+// handleDeleteSubscription stops watching a bundle ID.
+func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
+	bundle := r.PathValue("bundle")
+	if bundle == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bundle id is required"})
+		return
+	}
+	if _, err := s.pool.Exec(r.Context(), `DELETE FROM app_subscriptions WHERE bundle_id = $1`, bundle); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "subscription delete failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "bundle_id": bundle})
+}
+
+// compareVersions compares dotted version strings segment by segment
+// ("1.0.10" > "1.0.9", "1.0" == "1.0.0"). Numeric segments compare
+// numerically, others lexically. Returns -1, 0 or 1.
+func compareVersions(a, b string) int {
+	fa := splitVersion(a)
+	fb := splitVersion(b)
+	for i := 0; i < len(fa) || i < len(fb); i++ {
+		sa, sb := "0", "0"
+		if i < len(fa) {
+			sa = fa[i]
+		}
+		if i < len(fb) {
+			sb = fb[i]
+		}
+		if c := compareVersionSegment(sa, sb); c != 0 {
+			return c
+		}
+	}
+	return 0
+}
+
+func splitVersion(v string) []string {
+	return strings.FieldsFunc(v, func(r rune) bool {
+		return r == '.' || r == '-' || r == '_' || r == '+'
+	})
+}
+
+func compareVersionSegment(a, b string) int {
+	if isVersionDigits(a) && isVersionDigits(b) {
+		a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+		if len(a) != len(b) {
+			if len(a) < len(b) {
+				return -1
+			}
+			return 1
+		}
+	}
+	return strings.Compare(a, b)
+}
+
+func isVersionDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeBaseKey(bundleID, name string) string {
@@ -432,8 +790,9 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 	defer resp.Body.Close()
 
 	var sourceData struct {
-		Name string `json:"name"`
-		Apps []struct {
+		Identifier string `json:"identifier"`
+		Name       string `json:"name"`
+		Apps       []struct {
 			Name                 string `json:"name"`
 			BundleIdentifier     string `json:"bundleIdentifier"`
 			DeveloperName        string `json:"developerName"`
@@ -450,6 +809,12 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 		return nil
 	}
 
+	// Pinned-identifier check: a feed that identifies itself as something
+	// unexpected is skipped, never merged.
+	if src.ExpectedID != "" && sourceData.Identifier != "" && sourceData.Identifier != src.ExpectedID {
+		return nil
+	}
+
 	sourceTitle := sourceData.Name
 	if sourceTitle == "" {
 		sourceTitle = src.Name
@@ -460,6 +825,11 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 
 	for _, a := range sourceData.Apps {
 		if a.DownloadURL == "" {
+			continue
+		}
+		// Server-side downloader only speaks https; anything else (http,
+		// custom schemes) can never be imported, so don't list it.
+		if !strings.HasPrefix(strings.ToLower(a.DownloadURL), "https://") {
 			continue
 		}
 		baseKey := normalizeBaseKey(a.BundleIdentifier, a.Name)
@@ -670,11 +1040,17 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "download_url and device_id are required"})
 		return
 	}
+	// Untrusted input: only https downloads are ever fetched server-side.
+	if !strings.HasPrefix(strings.ToLower(req.DownloadURL), "https://") {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "download_url must be https"})
+		return
+	}
 	if req.Mode == "" {
 		req.Mode = "livecontainer"
 	}
 
-	// 1. Download remote IPA stream to temp
+	// 1. Download remote IPA stream to temp, capped like uploads so a
+	// hostile or broken source cannot exhaust the artifact volume.
 	client := &http.Client{Timeout: 90 * time.Second}
 	dlReq, err := http.NewRequest("GET", req.DownloadURL, nil)
 	if err != nil {
@@ -689,22 +1065,23 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dlResp.Body.Close()
 
-	sha256Hex, tmp, err := s.artifacts.SaveToTemp(dlResp.Body)
+	sha256Hex, tmp, err := s.artifacts.SaveToTemp(io.LimitReader(dlResp.Body, s.maxArtifactBytes+1))
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "storing download failed")
 		return
 	}
 	defer s.artifacts.DiscardTemp(tmp)
+	if fi, statErr := os.Stat(tmp); statErr != nil || fi.Size() > s.maxArtifactBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "downloaded file exceeds size limit"})
+		return
+	}
 
-	// 2. Inspect downloaded IPA
+	// 2. Inspect downloaded IPA. Anything that fails inspection is
+	// rejected: no fabricated metadata, no silent approval.
 	meta, metaErr := artifacts.Inspect(tmp)
 	if metaErr != nil {
-		meta = &artifacts.Metadata{
-			BundleIdentifier: "com.sidey.storeapp",
-			Version:          "1.0",
-			DevicePlatform:   "ios",
-			Platform:         "iPhoneOS",
-		}
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "downloaded file failed IPA inspection: " + metaErr.Error()})
+		return
 	}
 
 	// 3. Publish into content-addressed store
@@ -719,17 +1096,28 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 		filename = filename + ".ipa"
 	}
 
-	// 4. Save artifact in database
+	// 4. Save artifact in database. Imports land quarantined like uploads
+	// and need explicit approval in the dashboard; re-importing known bytes
+	// never changes the stored quarantine state.
 	var artifactID uuid.UUID
+	var quarantineState string
 	err = s.pool.QueryRow(r.Context(), `
 		INSERT INTO artifacts (sha256, filename, bundle_identifier, version, platform, quarantine_state, source)
-		VALUES ($1, $2, $3, $4, $5, 'approved', 'store')
-		ON CONFLICT (sha256) DO UPDATE SET quarantine_state = 'approved'
-		RETURNING id`,
-		sha256Hex, filename, meta.BundleIdentifier, meta.Version, meta.Platform).Scan(&artifactID)
+		VALUES ($1, $2, $3, $4, $5, 'quarantined', 'store')
+		ON CONFLICT (sha256) DO UPDATE SET filename = EXCLUDED.filename
+		RETURNING id, quarantine_state`,
+		sha256Hex, filename, meta.BundleIdentifier, meta.Version, meta.Platform).Scan(&artifactID, &quarantineState)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "artifact database upsert failed")
 		return
+	}
+
+	// Keep subscriptions in sync: an imported version becomes the seen
+	// baseline so it stops surfacing as an update.
+	if meta.BundleIdentifier != "" && meta.Version != "" {
+		_, _ = s.pool.Exec(r.Context(), `
+			UPDATE app_subscriptions SET seen_version = $2 WHERE bundle_id = $1`,
+			meta.BundleIdentifier, meta.Version)
 	}
 
 	// LiveContainer itself must always be signed natively with Apple developer cert
@@ -737,6 +1125,21 @@ func (s *Server) handleStoreInstall(w http.ResponseWriter, r *http.Request) {
 		strings.Contains(strings.ToLower(req.DownloadURL), "livecontainer") ||
 		meta.BundleIdentifier == "com.kdt.livecontainer" {
 		req.Mode = "native"
+	}
+
+	// Fresh imports are quarantined: store now, install only after explicit
+	// approval in the dashboard (re-imports of already-approved bytes flow
+	// straight through to step 5).
+	if quarantineState != "approved" {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"status":           "ok",
+			"mode":             req.Mode,
+			"artifact_id":      artifactID.String(),
+			"device_id":        req.DeviceID.String(),
+			"quarantine_state": quarantineState,
+			"message":          fmt.Sprintf("Downloaded %s into quarantine; approve it in the dashboard to install", req.Name),
+		})
+		return
 	}
 
 	// 5. Route to LiveContainer or Native Deploy
@@ -832,7 +1235,7 @@ func (s *Server) selfSourceURL(r *http.Request) string {
 
 // handleStoreSourceJSON renders the AltStore / SideStore / LiveContainer compatible repository JSON.
 func (s *Server) handleStoreSourceJSON(w http.ResponseWriter, r *http.Request) {
-	apps := s.getStoreApps()
+	apps := s.getStoreApps(r.Context())
 
 	host := r.Host
 	proto := "http"

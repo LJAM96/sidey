@@ -302,11 +302,14 @@ class ControlPlane:
         _, blob = self.request("download", sub=artifact_id, timeout=600, raw=True)
         return blob
 
-    def refresh_sign(self, refresh_id):
+    def refresh_sign(self, refresh_id, fallback=False):
         """Ask the control plane to sign the refresh job's source IPA.
 
-        Idempotent per refresh job: retries return the same sign job."""
-        _, resp = self.request("refresh_sign", sub=refresh_id, timeout=60)
+        Idempotent per (refresh, artifact): retries return the same sign
+        job. With fallback=True the original artifact is signed instead of
+        a resolved update (retry path after an update-sign failure)."""
+        body = {"fallback": True} if fallback else None
+        _, resp = self.request("refresh_sign", sub=refresh_id, body=body, timeout=60)
         return resp or {}
 
     def ensure_install(self, refresh_id):
@@ -482,6 +485,29 @@ def _fail_refresh(cp, job_id, stage, child_id, category, details):
         log(f"job {job_id}: status update failed: {exc}")
 
 
+def _await_sign(cp, sign_id, deadline):
+    """Wait for a sign job. Returns (signed_id, None) on success or
+    ("", (category, details)) when the sign job fails or times out; the
+    caller decides whether to retry or fail the refresh."""
+    while time.time() < deadline:
+        time.sleep(30)
+        st = cp.job_status(sign_id)
+        state = st.get("state", "")
+        if state == "completed":
+            result = st.get("result") or {}
+            if isinstance(result, str):
+                result = json.loads(result)
+            signed_id = result.get("signed_artifact_id", "")
+            if not signed_id:
+                return "", ("other",
+                             f"sign job completed without signed_artifact_id: {result}")
+            return signed_id, None
+        if state in ("failed", "dead"):
+            return "", (st.get("error_category") or "sign_failed",
+                        st.get("error_details") or f"sign job {state}")
+    return "", ("other", "timed out waiting for the signing worker")
+
+
 def _run_refresh_ios(cp, job, cache_dir):
     """Refresh parent coordination: sign child, then install child.
 
@@ -515,45 +541,43 @@ def _run_refresh_ios(cp, job, cache_dir):
     thread = threading.Thread(target=heartbeat, daemon=True)
     thread.start()
     try:
-        # 1. Ensure the sign child exists (idempotent per refresh job: a
-        # completed sign is reused, never re-run).
-        try:
-            resp = cp.refresh_sign(job_id)
-        except Exception as exc:
-            _fail_refresh(cp, job_id, "sign", "", "other", f"sign request failed: {exc}")
-            return
-        sign_id = resp.get("sign_job_id", "")
-        if not sign_id:
-            _fail_refresh(cp, job_id, "sign", "", "other",
-                          f"sign request returned no sign_job_id: {resp}")
-            return
-        log(f"job {job_id}: sign job {sign_id}")
-
-        # 2. Wait for the signing worker.
+        # 1-2. Sign, with one fallback to the original artifact: when the
+        # control plane resolves an update, the first sign job signs the NEW
+        # artifact; if that job fails, a second signs the ORIGINAL so the
+        # refresh still re-signs instead of failing (update is best-effort).
         deadline = started + int(os.environ.get("SIDEY_REFRESH_TIMEOUT", "2700"))
         signed_id = ""
-        while time.time() < deadline:
-            time.sleep(30)
-            st = cp.job_status(sign_id)
-            state = st.get("state", "")
-            if state == "completed":
-                result = st.get("result") or {}
-                if isinstance(result, str):
-                    result = json.loads(result)
-                signed_id = result.get("signed_artifact_id", "")
-                if not signed_id:
-                    _fail_refresh(cp, job_id, "sign", sign_id, "other",
-                                  f"sign job completed without signed_artifact_id: {result}")
-                    return
+        sign_id = ""
+        update_attempted = False
+        for sign_round in (False, True):
+            if sign_round and not update_attempted:
                 break
-            if state in ("failed", "dead"):
-                _fail_refresh(cp, job_id, "sign", sign_id,
-                              st.get("error_category") or "sign_failed",
-                              st.get("error_details") or f"sign job {state}")
+            try:
+                resp = cp.refresh_sign(job_id, fallback=sign_round)
+            except Exception as exc:
+                _fail_refresh(cp, job_id, "sign", "", "other", f"sign request failed: {exc}")
                 return
+            sign_id = resp.get("sign_job_id", "")
+            if not sign_id:
+                _fail_refresh(cp, job_id, "sign", "", "other",
+                              f"sign request returned no sign_job_id: {resp}")
+                return
+            if sign_round:
+                log(f"job {job_id}: falling back to original-artifact sign job {sign_id}")
+            else:
+                update_attempted = bool(resp.get("update_attempted"))
+                if update_attempted:
+                    log(f"job {job_id}: update attempt {resp.get('update_from_version')} -> {resp.get('update_to_version')}, sign job {sign_id}")
+                else:
+                    log(f"job {job_id}: sign job {sign_id}")
+            signed_id, failure = _await_sign(cp, sign_id, deadline)
+            if signed_id:
+                break
+            if not update_attempted or sign_round:
+                _fail_refresh(cp, job_id, "sign", sign_id, failure[0], failure[1])
+                return
+            log(f"job {job_id}: update sign failed ({failure[0]}); falling back to original artifact")
         if not signed_id:
-            _fail_refresh(cp, job_id, "sign", sign_id, "other",
-                          "timed out waiting for the signing worker")
             return
         progress["value"] = 50
         log(f"job {job_id}: signed derivative {signed_id}")

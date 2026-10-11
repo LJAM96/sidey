@@ -37,13 +37,14 @@ const expiryGuardLead = 24 * time.Hour
 // is resolved.
 const refreshMaxAttempts = 15
 
-// terminalBackoff is the minimum interval between automatic retries of a
-// refresh cycle that died with a terminal error (auth, certificate). Without
-// it the scheduler recovers the dead cycle on every tick, re-hammering Apple
-// (or a broken tunnel) every few minutes forever: thousands of dead jobs and
-// Apple-side throttling. With it the deployment is flagged for attention and
-// retried at most once per window; a manual refresh always bypasses the wait.
-const terminalBackoff = 6 * time.Hour
+// Terminal refresh failures (auth, certificate) never auto-recover: the
+// dead cycle is left flagged for attention and the dead row keeps holding
+// its idempotency key, so no new work is created on later ticks. Without
+// this the scheduler recovers the dead cycle on every tick, re-hammering
+// Apple (or a broken tunnel) every few minutes forever: thousands of dead
+// jobs and Apple-side throttling. Recovery resumes through a manual refresh
+// (unique key, operator intent); its success advances the profile expiry
+// and therefore starts a new cycle key, so normal scheduling resumes.
 
 type dueDeployment struct {
 	ID               uuid.UUID
@@ -170,12 +171,14 @@ func (s *Service) markUnrefreshable(ctx context.Context) error {
 // A dead refresh job holds its cycle's idempotency key forever (the due and
 // expiry dates never advance), which would silently starve the deployment of
 // all future refreshes. When the key conflicts with a dead job, the stale
-// row is removed so the cycle can be retried.
+// row is removed so the cycle can be retried — unless the death was terminal
+// (auth, certificate), in which case the cycle is flagged for attention and
+// left alone until an operator runs a manual refresh.
 //
 // An expiry guard runs after the normal schedule: if a profile is within
 // expiryGuardLead of expiry and has no active (non-dead) refresh job, a
-// refresh is forced. This is the last line of defence against a broken
-// refresh chain letting a profile expire entirely.
+// refresh is forced — except for attention-flagged deployments, which need
+// an operator, not another automatic attempt.
 func (s *Service) tick(ctx context.Context) (int, error) {
 	// Deployments that are due but cannot be resolved to a source IPA and
 	// Apple account are flagged for manual reassociation, never scheduled
@@ -206,9 +209,10 @@ func (s *Service) tick(ctx context.Context) (int, error) {
 
 // createRefreshJob creates a single refresh job for a due deployment,
 // handling dead-cycle recovery. Returns 1 if a job was created, 0 otherwise.
-// A dead cycle that died terminally (auth, certificate) is retried at most
-// once per terminalBackoff window and otherwise left flagged for attention,
-// so the scheduler cannot hammer a broken dependency every tick.
+// A dead cycle that died terminally (auth, certificate) is never recovered:
+// it is flagged for attention and left holding its key, so the scheduler
+// cannot hammer a broken dependency every tick. Operator recovery is via a
+// manual refresh, whose success starts a new cycle.
 // The job carries the authoritative workflow context (source IPA, previous
 // derivative, Apple account) so no later stage has to guess it.
 func (s *Service) createRefreshJob(ctx context.Context, d dueDeployment) int {
@@ -237,14 +241,12 @@ func (s *Service) createRefreshJob(ctx context.Context, d dueDeployment) int {
 	}
 	if job != nil && job.State == "dead" {
 		if terminal, summary := s.deadCycleTerminal(ctx, key); terminal {
-			if s.attentionThrottled(ctx, d.ID) {
-				// Still inside the backoff window: leave the dead row
-				// holding the key so no new work is created this tick.
-				return 0
-			}
+			// Terminal failure: flag attention and stop. The dead row
+			// keeps holding the key so later ticks create nothing.
+			s.logger.Warn("refresh cycle terminally failed; awaiting operator",
+				"deployment", d.ID, "key", key, "reason", summary)
 			s.flagAttention(ctx, d.ID, summary)
-			// Fall through to a single recovery attempt; if the fresh
-			// job dies terminally again it re-arms the backoff window.
+			return 0
 		}
 		if err := s.releaseDeadCycle(ctx, key); err != nil {
 			s.logger.Warn("clearing dead refresh cycle failed",
@@ -293,16 +295,13 @@ func (s *Service) expiryGuard(ctx context.Context) (int, error) {
 		WHERE d.agent_id IS NOT NULL
 		  AND ir.provisioning_expiry_at IS NOT NULL
 		  AND ir.provisioning_expiry_at <= now() + $1::interval
-		  AND NOT (
-			dep.last_refresh_result = 'attention'
-			AND dep.last_refresh_at > now() - $2::interval
-		  )
+		  AND COALESCE(dep.last_refresh_result, '') <> 'attention'
 		  AND NOT EXISTS (
 			SELECT 1 FROM jobs j2
 			WHERE j2.device_id = dep.device_id
 			  AND j2.job_type = 'refresh'
 			  AND j2.state IN ('pending', 'claimed', 'in_progress')
-		  )`, expiryGuardLead.String(), terminalBackoff.String())
+		  )`, expiryGuardLead.String())
 	if err != nil {
 		return 0, err
 	}
@@ -389,23 +388,9 @@ func (s *Service) deadCycleTerminal(ctx context.Context, key string) (bool, stri
 	return true, summary
 }
 
-// attentionThrottled reports whether the deployment was recently flagged for
-// attention, meaning an automatic terminal retry is still inside its backoff
-// window and must wait. Manual refreshes bypass this entirely.
-func (s *Service) attentionThrottled(ctx context.Context, deploymentID uuid.UUID) bool {
-	var throttled bool
-	if err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(last_refresh_result = 'attention'
-		                AND last_refresh_at > now() - $2::interval, false)
-		FROM deployments WHERE id = $1`, deploymentID, terminalBackoff.String()).Scan(&throttled); err != nil {
-		return false
-	}
-	return throttled
-}
-
 // flagAttention marks the deployment as needing operator attention with the
-// terminal failure summary, starting (or restarting) the backoff window. A
-// later successful refresh resets the result to 'ok'.
+// terminal failure summary. A later successful refresh resets the result
+// to 'ok'; until then automatic scheduling stays paused for this cycle.
 func (s *Service) flagAttention(ctx context.Context, deploymentID uuid.UUID, reason string) {
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE deployments SET

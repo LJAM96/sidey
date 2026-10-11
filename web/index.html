@@ -713,6 +713,11 @@
       </div>
     </div>
 
+    <div id="updatesBlock" style="display:none; margin-bottom:14px; border:1px solid var(--surface-border); border-radius:8px; padding:10px 14px;">
+      <div style="font-weight:600; margin-bottom:8px;">Available updates <span id="updatesCount" class="text-muted" style="font-weight:400; font-size:12px;"></span></div>
+      <div id="updatesList"></div>
+    </div>
+
     <div class="store-toolbar">
       <input id="storeSearch" type="text" class="input-field" placeholder="Search apps (e.g. Delta, LiveContainer, UTM, PPSSPP)..." style="max-width:320px;" oninput="filterStoreApps()">
       <select id="storeSourceFilter" class="select-input" style="max-width:220px;" onchange="filterStoreApps()">
@@ -1748,6 +1753,7 @@ async function fetchStoreApps(forceRefresh = false) {
     }
 
     renderStoreApps(storeAppsList);
+    fetchUpdates();
   } catch(e) {
     grid.innerHTML = `<div class="text-muted" style="grid-column: 1/-1; padding:20px; text-align:center;">Failed to load store: ${e.message}</div>`;
   }
@@ -1809,12 +1815,14 @@ function renderStoreApps(apps) {
     const actionButtonsHtml = isLiveContainerApp ? `
       <div class="store-actions">
         <button class="btn btn-sm btn-primary" style="flex:1; justify-content:center;" onclick="installStoreApp('${a.id}', 'native')">📲 Install LiveContainer (Native)</button>
+        <button class="btn btn-sm" style="padding:5px 8px;" title="Watch for updates" onclick="toggleSubscription('${a.bundle_id}')">Watch</button>
         <a href="${activeVer.download_url}" target="_blank" class="btn btn-sm" style="padding:5px 8px;" title="Download IPA">⬇</a>
       </div>
     ` : `
       <div class="store-actions">
         <button class="btn btn-sm btn-primary" style="flex:1; justify-content:center;" onclick="installStoreApp('${a.id}', 'livecontainer')">⚡ LiveContainer</button>
         <button class="btn btn-sm" style="flex:1; justify-content:center;" onclick="installStoreApp('${a.id}', 'native')">📲 Native</button>
+        <button class="btn btn-sm" style="padding:5px 8px;" title="Watch for updates" onclick="toggleSubscription('${a.bundle_id}')">Watch</button>
         <a href="${activeVer.download_url}" target="_blank" class="btn btn-sm" style="padding:5px 8px;" title="Download IPA">⬇</a>
       </div>
     `;
@@ -1877,7 +1885,8 @@ async function installStoreApp(appId, mode) {
       })
     });
     if (!res.ok) throw new Error(await res.text());
-    alert(`Started downloading and installing "${app.name} (${activeVer.version})"! Track progress in the Job Activity table.`);
+    const body = await res.json().catch(() => ({}));
+    alert(body.message || `Started "${app.name} (${activeVer.version})"! Track progress in the Job Activity table.`);
     fetchDashboard();
   } catch(err) {
     alert("Failed to start store installation: " + err.message);
@@ -1885,6 +1894,78 @@ async function installStoreApp(appId, mode) {
 }
 
 // -------------------------------------------------------------
+async function fetchUpdates() {
+  const block = document.getElementById("updatesBlock");
+  const list = document.getElementById("updatesList");
+  const count = document.getElementById("updatesCount");
+  try {
+    const res = await apiFetch("/api/v1/dashboard/updates");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const updates = data.updates || [];
+    if (updates.length === 0) { block.style.display = "none"; return; }
+    block.style.display = "block";
+    count.textContent = `${updates.length} deployment${updates.length === 1 ? '' : 's'} with a newer version in the catalog`;
+    list.innerHTML = `<table style="width:100%; font-size:13px;"><tbody>` + updates.map(u => `
+      <tr>
+        <td><strong>${u.app_name || u.bundle_id}</strong><br><span class="text-muted mono" style="font-size:11px;">${u.bundle_id}</span></td>
+        <td>${u.device_name || (u.kind === 'subscription' ? 'watched' : '')}</td>
+        <td class="mono">${u.current_version ? u.current_version + ' &rarr; ' : ''}<strong>${u.latest_version}</strong></td>
+        <td class="text-muted">${u.source_name || ''}</td>
+        <td style="text-align:right;"><button class="btn btn-sm" onclick="importUpdate('${u.latest_download_url}', '${(u.app_name || u.bundle_id).replace(/'/g, "\\'")}-${u.latest_version}', '${u.device_id || ''}')">Import</button>${u.kind === 'subscription' ? ` <button class="btn btn-sm" onclick="unwatchApp('${u.bundle_id}')">Unwatch</button>` : ''}</td>
+      </tr>`).join("") + `</tbody></table>`;
+  } catch(e) {
+    block.style.display = "none";
+  }
+}
+
+async function importUpdate(downloadUrl, name, deviceId) {
+  deviceId = deviceId || ((typeof targetDeviceSelect !== 'undefined' && targetDeviceSelect.value) || '');
+  if (!deviceId) { alert("No target device selected"); return; }
+  if (!confirm(`Download "${name}" into quarantine for review?`)) return;
+  try {
+    const res = await apiFetch("/api/v1/admin/store/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, download_url: downloadUrl, device_id: deviceId, mode: "livecontainer" })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json().catch(() => ({}));
+    alert(body.message || "Downloaded into quarantine.");
+    fetchDashboard();
+  } catch(err) {
+    alert("Import failed: " + err.message);
+  }
+}
+
+async function toggleSubscription(bundleId) {
+  if (!bundleId) return;
+  if (!confirm("Watch this app for updates?")) return;
+  try {
+    const res = await apiFetch("/api/v1/admin/store/subscriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundle_id: bundleId })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json().catch(() => ({}));
+    alert(`Watching ${body.name || bundleId} (seen ${body.seen_version || "nothing yet"}).`);
+    fetchUpdates();
+  } catch(err) {
+    alert("Watch failed: " + err.message);
+  }
+}
+
+async function unwatchApp(bundleId) {
+  try {
+    const res = await apiFetch("/api/v1/admin/store/subscriptions/" + encodeURIComponent(bundleId), { method: "DELETE" });
+    if (!res.ok) throw new Error(await res.text());
+    fetchUpdates();
+  } catch(err) {
+    alert("Unwatch failed: " + err.message);
+  }
+}
+
 // LiveContainer Modal & 1-Click Installation
 // -------------------------------------------------------------
 function openLiveContainerModal() {

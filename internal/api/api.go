@@ -134,6 +134,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/dashboard/certificates", s.admin(s.handleListCertificates))
 	mux.Handle("GET /api/v1/dashboard/deployments", s.admin(s.handleListDeployments))
 	mux.Handle("GET /api/v1/dashboard/refresh", s.admin(s.handleListRefresh))
+	mux.Handle("GET /api/v1/dashboard/updates", s.admin(s.handleListUpdates))
+	mux.Handle("GET /api/v1/admin/store/subscriptions", s.admin(s.handleListSubscriptions))
+	mux.Handle("POST /api/v1/admin/store/subscriptions", s.admin(s.handleAddSubscription))
+	mux.Handle("DELETE /api/v1/admin/store/subscriptions/{bundle}", s.admin(s.handleDeleteSubscription))
 
 	return s.recoverMiddleware(mux)
 }

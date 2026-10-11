@@ -726,6 +726,19 @@ func (s *Service) applyRefreshOutcome(ctx context.Context, tx pgx.Tx, job *Job, 
 		// Legacy results without the ids keep the previous record linkage
 		// untouched (only expiry advances).
 		if signedID != nil {
+			// Rollback record: the previously installed derivative becomes
+			// the rollback candidate whenever the installed artifact
+			// changes (version upgrade or fresh re-sign alike: it is the
+			// last known good install for this deployment).
+			var prevSigned *uuid.UUID
+			_ = tx.QueryRow(ctx, `SELECT signed_artifact_id FROM installation_records WHERE deployment_id = $1`,
+				params.DeploymentID).Scan(&prevSigned)
+			if prevSigned != nil && *prevSigned != *signedID {
+				if _, err := tx.Exec(ctx, `UPDATE deployments SET rollback_artifact_id = $2 WHERE id = $1`,
+					params.DeploymentID, prevSigned); err != nil {
+					return err
+				}
+			}
 			if _, err := tx.Exec(ctx, `
 				UPDATE installation_records SET
 					provisioning_expiry_at = $2,

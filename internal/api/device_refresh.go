@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"sidey/internal/jobs"
@@ -42,6 +44,11 @@ type refreshContext struct {
 	udid         string
 	platform     string
 	deviceName   string
+	// Auto-update resolution: when set, sourceID is a newer approved
+	// artifact and updateFrom is the originally scheduled one.
+	updateFrom      *uuid.UUID
+	sourceVersion   string
+	updateToVersion string
 }
 
 func (s *Server) loadRefreshContext(r *http.Request, refreshID uuid.UUID) (*refreshContext, int, map[string]any) {
@@ -83,6 +90,21 @@ func (s *Server) loadRefreshContext(r *http.Request, refreshID uuid.UUID) (*refr
 	sourceID := refreshParams.ArtifactID
 	if refreshParams.SourceArtifactID != nil && *refreshParams.SourceArtifactID != uuid.Nil {
 		sourceID = *refreshParams.SourceArtifactID
+	}
+
+	// Auto-update: with operator consent, prefer the newest approved
+	// artifact for the same bundle/platform over a plain re-sign. Consent
+	// lives in deployments.refresh_policy (default off); prereleases never
+	// qualify. The quarantine check below then applies to the final pick.
+	var updateFrom *uuid.UUID
+	var sourceVersion, updateToVersion string
+	if refreshParams.DeploymentID != nil {
+		if updateID, updateVer, origVer, ok := s.resolveUpdateArtifact(r.Context(), *refreshParams.DeploymentID, sourceID); ok {
+			orig := sourceID
+			updateFrom = &orig
+			sourceID = updateID
+			sourceVersion, updateToVersion = origVer, updateVer
+		}
 	}
 
 	// The refresh artifact must be an approved ORIGINAL IPA, never a signed
@@ -134,23 +156,94 @@ func (s *Server) loadRefreshContext(r *http.Request, refreshID uuid.UUID) (*refr
 		purpose = *purposeDB
 	}
 	return &refreshContext{
-		refreshID:    refreshID,
-		deploymentID: refreshParams.DeploymentID,
-		deviceID:     *deviceID,
-		purpose:      purpose,
-		sourceID:     sourceID,
-		appleID:      appleID,
-		udid:         deviceUDID,
-		platform:     devicePlatform,
-		deviceName:   deviceName,
+		refreshID:       refreshID,
+		deploymentID:    refreshParams.DeploymentID,
+		deviceID:        *deviceID,
+		purpose:         purpose,
+		sourceID:        sourceID,
+		appleID:         appleID,
+		udid:            deviceUDID,
+		platform:        devicePlatform,
+		deviceName:      deviceName,
+		updateFrom:      updateFrom,
+		sourceVersion:   sourceVersion,
+		updateToVersion: updateToVersion,
 	}, 0, nil
+}
+
+// resolveUpdateArtifact checks whether a refresh should upgrade instead of
+// re-sign: operator consent via deployments.refresh_policy
+// ({"auto_update": true}, default off), then the newest approved artifact
+// with the same bundle/platform and a higher version. Prerelease-looking
+// versions never qualify. Returns the update artifact, its version and the
+// original version.
+func (s *Server) resolveUpdateArtifact(ctx context.Context, deploymentID, sourceID uuid.UUID) (uuid.UUID, string, string, bool) {
+	var policyRaw []byte
+	var bundle, version, platform string
+	if err := s.pool.QueryRow(ctx, `
+		SELECT dep.refresh_policy, a.bundle_identifier, COALESCE(a.version, ''), COALESCE(a.platform, '')
+		FROM deployments dep, artifacts a
+		WHERE dep.id = $1 AND a.id = $2`, deploymentID, sourceID).
+		Scan(&policyRaw, &bundle, &version, &platform); err != nil || bundle == "" {
+		return uuid.Nil, "", "", false
+	}
+	var policy struct {
+		AutoUpdate bool `json:"auto_update"`
+	}
+	if len(policyRaw) > 0 {
+		_ = json.Unmarshal(policyRaw, &policy)
+	}
+	if !policy.AutoUpdate {
+		return uuid.Nil, "", "", false
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, COALESCE(version, ''), filename
+		FROM artifacts
+		WHERE bundle_identifier = $1 AND COALESCE(platform, '') = $2
+		  AND quarantine_state = 'approved' AND id <> $3`, bundle, platform, sourceID)
+	if err != nil {
+		return uuid.Nil, "", "", false
+	}
+	defer rows.Close()
+	var bestID uuid.UUID
+	var bestVer string
+	found := false
+	for rows.Next() {
+		var id uuid.UUID
+		var v, fn string
+		if err := rows.Scan(&id, &v, &fn); err != nil {
+			continue
+		}
+		if compareVersions(v, version) <= 0 || looksPrerelease(v) || looksPrerelease(fn) {
+			continue
+		}
+		if !found || compareVersions(v, bestVer) > 0 {
+			bestID, bestVer, found = id, v, true
+		}
+	}
+	if !found {
+		return uuid.Nil, "", "", false
+	}
+	return bestID, bestVer, version, true
+}
+
+// looksPrerelease reports whether a version or filename looks like a
+// pre-release build (never auto-installed; fail-safe direction).
+func looksPrerelease(s string) bool {
+	l := strings.ToLower(s)
+	for _, m := range []string{"beta", "alpha", "rc", "nightly", "preview", "dev", "testflight", "snapshot"} {
+		if strings.Contains(l, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleDeviceRefreshSign ensures a signing-worker sign job exists for a
 // refresh job held by the same-host device service. Safe to retry: the sign
-// job's idempotency key is derived from the refresh job id, so repeated
-// calls (e.g. after a device-service restart) return the same sign job and
-// a completed sign is reused rather than re-run.
+// job's idempotency key is derived from the refresh job id and the artifact,
+// so repeated calls return the same sign job and a completed sign is reused
+// rather than re-run.
 func (s *Server) handleDeviceRefreshSign(w http.ResponseWriter, r *http.Request) {
 	refreshID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -163,12 +256,30 @@ func (s *Server) handleDeviceRefreshSign(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Optional fallback body {"fallback": true}: after an update-sign
+	// failure the orchestrator re-signs the ORIGINAL artifact under its own
+	// key instead of failing the refresh.
+	var fallbackReq struct {
+		Fallback bool `json:"fallback"`
+	}
+	fallback := false
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&fallbackReq)
+		fallback = fallbackReq.Fallback
+	}
+	sourceID := rc.sourceID
+	updateAttempted := rc.updateFrom != nil
+	if fallback && rc.updateFrom != nil {
+		sourceID = *rc.updateFrom
+		updateAttempted = false
+	}
+
 	deviceType := "ios"
 	if rc.platform == "tvos" || rc.platform == "tvOS" {
 		deviceType = "tvos"
 	}
 	signFields := map[string]any{
-		"artifact_id":    rc.sourceID,
+		"artifact_id":    sourceID,
 		"machine_name":   "isideload-minimal",
 		"udid":           rc.udid,
 		"device_name":    rc.deviceName,
@@ -188,7 +299,7 @@ func (s *Server) handleDeviceRefreshSign(w http.ResponseWriter, r *http.Request)
 		JobType:        jobs.JobTypeSign,
 		DeviceID:       &rc.deviceID,
 		Parameters:     signParams,
-		IdempotencyKey: fmt.Sprintf("refresh-sign:%s", refreshID),
+		IdempotencyKey: fmt.Sprintf("refresh-sign:%s:%s", refreshID, sourceID.String()[:8]),
 		ParentJobID:    &rc.refreshID,
 		Purpose:        &rc.purpose,
 	})
@@ -197,10 +308,14 @@ func (s *Server) handleDeviceRefreshSign(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sign_job_id": job.ID,
-		"state":       job.State,
-		"device_id":   rc.deviceID,
-		"apple_id":    rc.appleID,
+		"sign_job_id":         job.ID,
+		"state":               job.State,
+		"device_id":           rc.deviceID,
+		"apple_id":            rc.appleID,
+		"source_artifact_id":  sourceID,
+		"update_attempted":    updateAttempted,
+		"update_from_version": rc.sourceVersion,
+		"update_to_version":   rc.updateToVersion,
 	})
 }
 
@@ -221,10 +336,14 @@ func (s *Server) handleDeviceEnsureInstall(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Locate the sign child created by handleDeviceRefreshSign.
+	// Locate the sign child created by handleDeviceRefreshSign: the newest
+	// sign job under this refresh (per-artifact keys let an update attempt
+	// and its original-artifact fallback coexist).
 	var signID uuid.UUID
-	err = s.pool.QueryRow(r.Context(),
-		`SELECT id FROM jobs WHERE idempotency_key = $1`, fmt.Sprintf("refresh-sign:%s", refreshID)).
+	err = s.pool.QueryRow(r.Context(), `
+		SELECT id FROM jobs
+		WHERE parent_job_id = $1 AND job_type = 'sign'
+		ORDER BY created_at DESC LIMIT 1`, refreshID).
 		Scan(&signID)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "no sign job for this refresh yet"})

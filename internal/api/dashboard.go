@@ -105,7 +105,7 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	s.queryTable(w, r, `
 		SELECT id, device_id, channel_id, target, desired_version,
-		       update_policy, current_state, updated_at
+		       update_policy, current_state, rollback_artifact_id, updated_at
 		FROM deployments ORDER BY updated_at DESC LIMIT 200`)
 }
 

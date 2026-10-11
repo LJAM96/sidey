@@ -44,6 +44,17 @@ const (
 	defaultStateVolume  = "/var/lib/sidey/signing-worker"
 	defaultControlPlane = "http://127.0.0.1:8080"
 	defaultAnisetteURL  = "http://127.0.0.1:6970"
+	// Apple circuit breaker: this many consecutive Apple-auth failures open
+	// the breaker for breakerCooldown, during which no Apple-touching jobs
+	// are claimed. The worker is the only component that logs into Apple,
+	// so this is the choke point where hammering Apple's servers must be
+	// impossible no matter what the scheduler or dashboard queue up.
+	breakerAuthThreshold = 3
+	breakerCooldown      = time.Hour
+	// maxAppleRunsPerHour caps Apple-touching helper runs (sign, p12export,
+	// appids) no matter how many jobs queue up. Normal operation needs a
+	// handful per day; installs never log in (SKIP_SIGN=1).
+	maxAppleRunsPerHour = 12
 )
 
 type config struct {
@@ -119,8 +130,18 @@ func main() {
 	}()
 
 	log.Printf("signing-worker %s ready (polling every %ds)", agentID, claimPollSeconds)
+	appleGate = newAppleGuard(cfg.agentStateDir)
+	lastSkipReason := ""
 	for {
-		claimAndRun(cfg, agentKey)
+		if ok, reason := appleGate.allow(); !ok {
+			if reason != lastSkipReason {
+				log.Printf("skipping Apple job claim: %s", reason)
+				lastSkipReason = reason
+			}
+		} else {
+			lastSkipReason = ""
+			claimAndRun(cfg, agentKey)
+		}
 		time.Sleep(claimPollSeconds * time.Second)
 	}
 }
@@ -226,6 +247,101 @@ func heartbeat(cfg config, agentKey string) {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Apple circuit breaker + rate cap
+//
+// The signing worker is the only component that logs into Apple, so it is
+// the choke point where hammering Apple's servers must be impossible
+// regardless of what the scheduler, device service or dashboard queue up:
+//
+//   - Circuit breaker: breakerAuthThreshold consecutive Apple-auth failures
+//     open the breaker for breakerCooldown. While open, no Apple-touching
+//     jobs are claimed; jobs wait safely in pending.
+//   - Rate cap: at most maxAppleRunsPerHour Apple-touching helper runs, so
+//     even a flood of queued jobs drains slowly.
+//
+// State persists in the agent state dir so container restarts don't reset it.
+// All use is from the single claim-loop goroutine.
+type appleGuardState struct {
+	ConsecutiveAuthFailures int     `json:"consecutive_auth_failures"`
+	BreakerUntilUnix        int64   `json:"breaker_until_unix"`
+	AttemptUnix             []int64 `json:"attempt_unix"`
+}
+
+var appleGate = &appleGuard{}
+
+type appleGuard struct {
+	stateDir string
+	state    appleGuardState
+}
+
+func newAppleGuard(stateDir string) *appleGuard {
+	g := &appleGuard{stateDir: stateDir}
+	if data, err := os.ReadFile(g.path()); err == nil {
+		_ = json.Unmarshal(data, &g.state)
+	}
+	return g
+}
+
+func (g *appleGuard) path() string { return filepath.Join(g.stateDir, "apple_guard.json") }
+
+func (g *appleGuard) save() {
+	data, err := json.Marshal(g.state)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(g.path(), data, 0o600)
+}
+
+func (g *appleGuard) prune() {
+	cutoff := time.Now().Add(-time.Hour).Unix()
+	kept := g.state.AttemptUnix[:0]
+	for _, t := range g.state.AttemptUnix {
+		if t >= cutoff {
+			kept = append(kept, t)
+		}
+	}
+	g.state.AttemptUnix = kept
+}
+
+// allow reports whether an Apple-touching job may run now.
+func (g *appleGuard) allow() (bool, string) {
+	now := time.Now()
+	if g.state.BreakerUntilUnix > now.Unix() {
+		return false, fmt.Sprintf("circuit breaker open after repeated Apple-auth failures; next probe at %s",
+			time.Unix(g.state.BreakerUntilUnix, 0).UTC().Format(time.RFC3339))
+	}
+	// Cooldown expired with failures still recorded: half-open, allow one
+	// probe. A fresh failure re-opens immediately via noteRun; success resets.
+	g.prune()
+	if len(g.state.AttemptUnix) >= maxAppleRunsPerHour {
+		return false, fmt.Sprintf("Apple rate cap reached (%d runs/hour); oldest attempt ages out at %s",
+			maxAppleRunsPerHour,
+			time.Unix(g.state.AttemptUnix[0], 0).Add(time.Hour).UTC().Format(time.RFC3339))
+	}
+	return true, ""
+}
+
+// noteRun records the outcome of one Apple-touching helper run.
+func (g *appleGuard) noteRun(succeeded, authFailure bool) {
+	g.state.AttemptUnix = append(g.state.AttemptUnix, time.Now().Unix())
+	if succeeded {
+		if g.state.ConsecutiveAuthFailures != 0 {
+			log.Print("Apple login succeeded; circuit breaker failure count reset")
+		}
+		g.state.ConsecutiveAuthFailures = 0
+	} else if authFailure {
+		g.state.ConsecutiveAuthFailures++
+		if g.state.ConsecutiveAuthFailures >= breakerAuthThreshold {
+			g.state.BreakerUntilUnix = time.Now().Add(breakerCooldown).Unix()
+			log.Printf("Apple circuit breaker OPEN for %s after %d consecutive auth failures; no Apple jobs will be claimed until %s",
+				breakerCooldown, g.state.ConsecutiveAuthFailures,
+				time.Unix(g.state.BreakerUntilUnix, 0).UTC().Format(time.RFC3339))
+		}
+	}
+	g.save()
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +587,7 @@ func runSignJob(cfg config, agentKey, jobID string, deviceID *string, rawParams 
 		if len(details) > maxErrorDetails {
 			details = details[:maxErrorDetails]
 		}
+		appleGate.noteRun(false, category == "auth")
 		postJobStatus(cfg, agentKey, jobID, "failed", nil, category, details, nil)
 		// State may have been updated (anisette) even on failure.
 		encryptState(cfg.stateRuntime, cfg.agentStateDir)
@@ -478,6 +595,7 @@ func runSignJob(cfg config, agentKey, jobID string, deviceID *string, rawParams 
 		wg.Wait()
 		return
 	}
+	appleGate.noteRun(true, false)
 	progress = 85
 	postJobStatus(cfg, agentKey, jobID, "in_progress", &progress, "", "", nil)
 
@@ -581,6 +699,7 @@ func runExportP12Job(cfg config, agentKey, jobID string, rawParams json.RawMessa
 		if len(details) > maxErrorDetails {
 			details = details[:maxErrorDetails]
 		}
+		appleGate.noteRun(false, category == "auth")
 		postJobStatus(cfg, agentKey, jobID, "failed", nil, category, details, nil)
 		encryptState(cfg.stateRuntime, cfg.agentStateDir)
 		return
@@ -606,6 +725,7 @@ func runExportP12Job(cfg config, agentKey, jobID string, rawParams json.RawMessa
 		log.Printf("state re-encrypt failed: %v", err)
 	}
 	log.Printf("job %s: exported p12 (sha256 %s, cert %s)", jobID, result.P12Sha256, result.CertSerial)
+	appleGate.noteRun(true, false)
 }
 
 type p12exportResult struct {
@@ -694,12 +814,14 @@ func runAppIDsJob(cfg config, agentKey, jobID string, rawParams json.RawMessage)
 		if len(details) > maxErrorDetails {
 			details = details[:maxErrorDetails]
 		}
+		appleGate.noteRun(false, category == "auth")
 		postJobStatus(cfg, agentKey, jobID, "failed", nil, category, details, nil)
 		encryptState(cfg.stateRuntime, cfg.agentStateDir)
 		return
 	}
 
 	encryptState(cfg.stateRuntime, cfg.agentStateDir)
+	appleGate.noteRun(true, false)
 
 	summary := map[string]any{
 		"mode":                result.Mode,

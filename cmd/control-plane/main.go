@@ -112,6 +112,29 @@ func main() {
 		}
 	}()
 
+	// App-source watcher: refreshes the catalog snapshot used for update
+	// detection. Slow loop with a delayed first pass so boot stays quiet;
+	// the 10-minute fetch cache bounds upstream traffic, and snapshots
+	// never download or install anything.
+	sourceInterval := time.Duration(envInt("SOURCE_POLL_SECONDS", 43200)) * time.Second
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Minute):
+		}
+		for {
+			if n := server.SnapshotSources(ctx); n > 0 {
+				logger.Info("source snapshot refreshed", "apps", n)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(sourceInterval):
+			}
+		}
+	}()
+
 	// Signed-derivative retention: original IPAs are kept forever, but a
 	// signed derivative is only useful while its embedded profile is valid.
 	// Rows whose profile expired beyond the retention window are pruned once
