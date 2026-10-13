@@ -15,3 +15,12 @@ scripts/__pycache__/
 # Operational Phase B transport-test evidence (large binaries/logs, not
 # source). Kept locally for the record, never tracked.
 results/phase-b/
+
+# macOS / Xcode user-local state (never track).
+.DS_Store
+xcuserdata/
+*.xcuserstate
+DerivedData/
+*.moved-aside
+*.hmap
+*.ipa
