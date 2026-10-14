@@ -124,3 +124,26 @@ Notes:
 - Should `source.json` (full) be offered with a warning, or hidden?
 - Per-app "watch for updates" subscriptions vs watching whole catalog?
 - Minimum Accretion app version pinning for the catalog fetch itself?
+
+## 10. Discovered-feed mirror (done 2026-10-12)
+
+Sidey mirrors Accretion's `discovered.txt` (~130 community feeds) as
+individual custom sources (`SyncDiscoveredSources`, weekly via
+`DISCOVERED_SYNC_SECONDS`, first run 2 min after boot):
+
+- Add-only: defaults and user-added entries are never touched. Mirrored
+  entries carry `managed_by: accretion-discovered` and deterministic IDs.
+- Deleting a mirrored feed tombstones its URL
+  (`store_sources_removed.json`); the sync never resurrects it.
+- Discovered.txt inline `# comments` are stripped before URLs are stored.
+- Custom sources persist via `/run/sidey` (`/var/lib/sidey` is ephemeral
+  in the control-plane container — the delete path reads both).
+- Each feed still fetches independently: a dead feed drops only its apps.
+
+## 11. Self-hosted source publishes the Sidey library (done 2026-10-12)
+
+`/source.json` ("Sidey App Store") now appends every approved original
+IPA from the artifacts table, grouped by bundle with newest first and
+served from `/api/v1/store/artifacts/{id}/install.ipa`. Any approved
+Sidey artifact — including the companion app's IPA once approved — is
+installable from the self-hosted source with no further changes.

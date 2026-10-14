@@ -608,6 +608,7 @@
       <div style="display:flex; gap:10px; align-items:center;">
         <span id="deviceCountBadge" class="badge badge-neutral">0 Devices</span>
         <button class="btn btn-sm btn-primary" onclick="openAddDeviceModal()">+ Add Device</button>
+        <button class="btn btn-sm" onclick="openPairModal()" title="Mint a scoped token and show a pairing QR for the iOS app">Pair iOS app</button>
       </div>
     </div>
 
@@ -957,6 +958,37 @@
   </div>
 </div>
 
+<!-- Pair iOS App Modal -->
+<div id="pairModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(4px);">
+  <div style="background:var(--surface); border:1px solid var(--surface-border); border-radius:var(--radius-lg); width:100%; max-width:480px; padding:24px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <div style="font-size:16px; font-weight:600;">Pair iOS App</div>
+      <button style="background:none; border:none; color:var(--text-muted); font-size:22px; cursor:pointer;" onclick="closePairModal()">&times;</button>
+    </div>
+    <p style="font-size:12px; color:var(--text-secondary); margin-bottom:14px;">
+      Mints a scoped device token (shown once). Scan the QR with the Sidey iOS app or copy the values manually.
+    </p>
+    <div style="display:flex; gap:8px; margin-bottom:12px;">
+      <input type="text" id="pairTokenName" class="input-field" placeholder="Token name, e.g. Luke&apos;s iPhone" style="flex:1;">
+      <select id="pairTokenScopes" class="select-input" style="max-width:200px;">
+        <option value="read">Read</option>
+        <option value="read,control" selected>Read + Control</option>
+      </select>
+      <button class="btn btn-primary" onclick="mintPairingToken()">Mint</button>
+    </div>
+    <div id="pairResult" style="display:none; text-align:center; margin-bottom:12px;">
+      <div id="pairQr" style="display:inline-block; background:#fff; padding:8px; border-radius:8px;"></div>
+      <div class="mono" id="pairPayload" style="font-size:11px; word-break:break-all; margin-top:8px;"></div>
+      <div style="margin-top:8px;"><button class="btn btn-sm" onclick="copyPairPayload()">Copy pairing JSON</button></div>
+    </div>
+    <div style="font-size:13px; font-weight:600; margin-bottom:6px;">Active tokens</div>
+    <div id="pairTokenList" class="text-muted" style="font-size:12px;">Loading…</div>
+    <div style="display:flex; justify-content:flex-end; margin-top:14px;">
+      <button class="btn" onclick="closePairModal()">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Add Store Source Modal -->
 <div id="addSourceModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:100; backdrop-filter:blur(4px);">
   <div style="background:var(--surface); border:1px solid var(--surface-border); border-radius:var(--radius-lg); width:100%; max-width:480px; padding:24px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
@@ -984,6 +1016,7 @@
   </div>
 </div>
 
+<script src="vendor/qrcode.min.js"></script>
 <script>
 let selectedFile = null;
 let liveDevices = [];
@@ -992,7 +1025,6 @@ let storeAppsList = [];
 
 async function apiFetch(url, options = {}) {
   options.headers = options.headers || {};
-  options.headers["X-Requested-With"] = "SideyWeb";
   return fetch(url, options);
 }
 
@@ -1964,6 +1996,63 @@ async function unwatchApp(bundleId) {
   } catch(err) {
     alert("Unwatch failed: " + err.message);
   }
+}
+
+let pairPayloadText = "";
+function openPairModal() {
+  document.getElementById("pairModal").style.display = "flex";
+  document.getElementById("pairResult").style.display = "none";
+  loadPairTokens();
+}
+function closePairModal() {
+  document.getElementById("pairModal").style.display = "none";
+}
+async function loadPairTokens() {
+  const list = document.getElementById("pairTokenList");
+  try {
+    const res = await apiFetch("/api/v1/admin/device-tokens");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const toks = data.tokens || [];
+    if (toks.length === 0) { list.innerHTML = "No tokens yet."; return; }
+    list.innerHTML = toks.map(t => `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid var(--surface-border);">
+        <span><strong>${t.name}</strong> <span class="text-muted">[${(t.scopes || []).join(",")}]</span>${t.revoked_at ? ' <span class="badge badge-neutral">revoked</span>' : ''}</span>
+        ${t.revoked_at ? '' : `<button class="btn btn-sm" onclick="revokePairToken('${t.id}')">Revoke</button>`}
+      </div>`).join("");
+  } catch(e) { list.innerHTML = "Failed to load tokens."; }
+}
+async function mintPairingToken() {
+  const name = document.getElementById("pairTokenName").value.trim() || "iOS app";
+  const scopes = document.getElementById("pairTokenScopes").value.split(",");
+  try {
+    const res = await apiFetch("/api/v1/admin/device-tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, scopes: scopes })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const body = await res.json();
+    const payload = JSON.stringify({ v: 1, url: window.location.origin, token: body.token });
+    pairPayloadText = payload;
+    document.getElementById("pairPayload").textContent = payload;
+    const qr = document.getElementById("pairQr");
+    qr.innerHTML = "";
+    new QRCode(qr, { text: payload, width: 180, height: 180, correctLevel: QRCode.CorrectLevel.M });
+    document.getElementById("pairResult").style.display = "block";
+    loadPairTokens();
+  } catch(err) { alert("Mint failed: " + err.message); }
+}
+function copyPairPayload() {
+  navigator.clipboard.writeText(pairPayloadText).then(() => alert("Copied."));
+}
+async function revokePairToken(id) {
+  if (!confirm("Revoke this token? The paired app loses access immediately.")) return;
+  try {
+    const res = await apiFetch("/api/v1/admin/device-tokens/" + encodeURIComponent(id), { method: "DELETE" });
+    if (!res.ok) throw new Error(await res.text());
+    loadPairTokens();
+  } catch(err) { alert("Revoke failed: " + err.message); }
 }
 
 // LiveContainer Modal & 1-Click Installation

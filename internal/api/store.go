@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +30,10 @@ type StoreSource struct {
 	// whose identifier is present and different is skipped outright (cheap
 	// tamper-evidence against silent feed swaps).
 	ExpectedID string `json:"expected_id,omitempty"`
+	// ManagedBy marks operator-invisible provenance. The discovered-feed
+	// mirror sets it; the sync never touches entries without it, and
+	// deleting a managed entry tombstones its URL so it is never re-added.
+	ManagedBy string `json:"managed_by,omitempty"`
 }
 
 type AppVersion struct {
@@ -44,10 +50,10 @@ type StoreApp struct {
 	Name        string       `json:"name"`
 	Developer   string       `json:"developer"`
 	Description string       `json:"description"`
-	IconURL     string `json:"icon_url"`
-	Source      string `json:"source"`
-	SourceType  string `json:"source_type"`
-	SourceID    string `json:"source_id"`
+	IconURL     string       `json:"icon_url"`
+	Source      string       `json:"source"`
+	SourceType  string       `json:"source_type"`
+	SourceID    string       `json:"source_id"`
 	Versions    []AppVersion `json:"versions"`
 
 	// Convenience top-level fields (defaults to primary/stable version)
@@ -243,6 +249,148 @@ func (s *Server) saveCustomSources(custom []StoreSource) error {
 	return nil
 }
 
+// accretionDiscoveredURL is the upstream list of community AltStore feeds
+// that Accretion merges beyond its hand-picked Core set. Mirroring it
+// (add-only) keeps Sidey's catalog breadth in step without manual curation;
+// each feed still fetches independently, so a dead one only drops its own apps.
+const accretionDiscoveredURL = "https://raw.githubusercontent.com/GETAccretion/getaccretion.github.io/main/discovered.txt"
+
+// discoveredManagedBy marks sources added by the mirror sync below.
+const discoveredManagedBy = "accretion-discovered"
+
+func discoveredRemovedPaths() []string {
+	return []string{"/var/lib/sidey/store_sources_removed.json", "/run/sidey/store_sources_removed.json"}
+}
+
+// loadDiscoveredRemoved returns URLs the operator deleted after they were
+// mirrored, so the sync never resurrects them.
+func loadDiscoveredRemoved() map[string]bool {
+	removed := map[string]bool{}
+	for _, p := range discoveredRemovedPaths() {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var urls []string
+		if json.Unmarshal(data, &urls) == nil {
+			for _, u := range urls {
+				removed[u] = true
+			}
+		}
+	}
+	return removed
+}
+
+func saveDiscoveredRemoved(removed map[string]bool) {
+	urls := make([]string, 0, len(removed))
+	for u := range removed {
+		urls = append(urls, u)
+	}
+	sort.Strings(urls)
+	data, _ := json.MarshalIndent(urls, "", "  ")
+	for _, p := range discoveredRemovedPaths() {
+		if dir := filepath.Dir(p); dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
+		}
+		_ = os.WriteFile(p, data, 0o644)
+	}
+}
+
+// loadCustomSourcesFile reads the operator-managed source file (same dual
+// path as loadStoreSources, without merging defaults).
+func loadCustomSourcesFile() []StoreSource {
+	for _, p := range []string{"/var/lib/sidey/store_sources.json", "/run/sidey/store_sources.json"} {
+		if data, err := os.ReadFile(p); err == nil {
+			var custom []StoreSource
+			if json.Unmarshal(data, &custom) == nil {
+				return custom
+			}
+		}
+	}
+	return nil
+}
+
+// SyncDiscoveredSources mirrors Accretion's discovered feed list into the
+// custom sources file. It only appends: defaults and user-added entries are
+// never modified, and feeds the operator deleted stay deleted.
+func (s *Server) SyncDiscoveredSources(ctx context.Context) (added int, err error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "GET", accretionDiscoveredURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", "Sidey-ControlPlane/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("discovered list returned %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, err
+	}
+	removed := loadDiscoveredRemoved()
+	custom := loadCustomSourcesFile()
+	known := map[string]bool{}
+	for _, d := range defaultSources {
+		known[d.URL] = true
+	}
+	for _, c := range custom {
+		known[c.URL] = true
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		// First whitespace-delimited token; discovered.txt carries
+		// trailing "# comment" annotations that must not become URLs.
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		u := fields[0]
+		if i := strings.Index(u, "#"); i >= 0 {
+			u = u[:i]
+		}
+		u = strings.TrimSpace(strings.ReplaceAll(u, " ", "%20"))
+		if u == "" || strings.HasPrefix(u, "#") {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(u), "https://") {
+			continue
+		}
+		if known[u] || removed[u] {
+			continue
+		}
+		host := strings.TrimPrefix(u, "https://")
+		if i := strings.Index(host, "/"); i >= 0 {
+			host = host[:i]
+		}
+		sum := sha1.Sum([]byte(u))
+		custom = append(custom, StoreSource{
+			ID:        "src-discovered-" + hex.EncodeToString(sum[:])[:8],
+			Type:      "altstore",
+			URL:       u,
+			Name:      host,
+			IsDefault: false,
+			ManagedBy: discoveredManagedBy,
+		})
+		known[u] = true
+		added++
+	}
+	if added == 0 {
+		return 0, nil
+	}
+	if err := s.saveCustomSources(custom); err != nil {
+		return 0, err
+	}
+	globalStoreCache.Lock()
+	globalStoreCache.apps = nil
+	globalStoreCache.Unlock()
+	s.audit.Record(ctx, "system", "store.discovered_synced", audit.WithData(map[string]any{"added": added}))
+	return added, nil
+}
+
 func (s *Server) handleListStoreSources(w http.ResponseWriter, r *http.Request) {
 	sources := s.loadStoreSources()
 	writeJSON(w, http.StatusOK, map[string]any{"sources": sources})
@@ -329,14 +477,27 @@ func (s *Server) handleDeleteStoreSource(w http.ResponseWriter, r *http.Request)
 	}
 
 	var custom []StoreSource
-	path := "/var/lib/sidey/store_sources.json"
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &custom)
+	// NOTE: keep in sync with loadCustomSourcesFile: /var/lib/sidey is
+	// ephemeral in this container, /run/sidey is the persistent copy.
+	for _, p := range []string{"/var/lib/sidey/store_sources.json", "/run/sidey/store_sources.json"} {
+		if data, err := os.ReadFile(p); err == nil {
+			if json.Unmarshal(data, &custom) == nil && len(custom) > 0 {
+				break
+			}
+		}
 	}
 	var filtered []StoreSource
 	for _, src := range custom {
 		if src.ID != id {
 			filtered = append(filtered, src)
+			continue
+		}
+		// A deleted mirrored feed is tombstoned so the weekly sync never
+		// resurrects it; user-added entries just disappear.
+		if src.ManagedBy == discoveredManagedBy {
+			removed := loadDiscoveredRemoved()
+			removed[src.URL] = true
+			saveDiscoveredRemoved(removed)
 		}
 	}
 	_ = s.saveCustomSources(filtered)
@@ -406,9 +567,14 @@ func (s *Server) handleListStoreApps(w http.ResponseWriter, r *http.Request) {
 
 // snapshotListings persists the newest listing per (source, bundle ID) for
 // update detection. Snapshots only; nothing is downloaded or installed.
+// GitHub-sourced rows carry synthetic bundle IDs (com.github.owner.repo)
+// that can never match a deployed IPA, so only altstore rows are kept.
 // A snapshot failure is logged but never breaks listing.
 func (s *Server) snapshotListings(ctx context.Context, apps []StoreApp) {
 	for _, a := range apps {
+		if a.SourceType != "altstore" {
+			continue
+		}
 		if a.BundleID == "" || a.DownloadURL == "" {
 			continue
 		}
@@ -802,6 +968,16 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 			IconURL              string `json:"iconURL"`
 			DownloadURL          string `json:"downloadURL"`
 			Size                 int64  `json:"size"`
+			// Modern per-version history; when present it replaces the
+			// legacy top-level version fields above.
+			Versions []struct {
+				Version              string `json:"version"`
+				Date                 string `json:"date"`
+				LocalizedDescription string `json:"localizedDescription"`
+				DownloadURL          string `json:"downloadURL"`
+				Size                 int64  `json:"size"`
+				MinOSVersion         string `json:"minOSVersion"`
+			} `json:"versions"`
 		} `json:"apps"`
 	}
 
@@ -824,54 +1000,68 @@ func fetchAltStoreApps(client *http.Client, src StoreSource) []StoreApp {
 	var order []string
 
 	for _, a := range sourceData.Apps {
-		if a.DownloadURL == "" {
-			continue
+		type rawVer struct {
+			version, date, desc, url string
+			size                     int64
 		}
-		// Server-side downloader only speaks https; anything else (http,
-		// custom schemes) can never be imported, so don't list it.
-		if !strings.HasPrefix(strings.ToLower(a.DownloadURL), "https://") {
-			continue
-		}
-		baseKey := normalizeBaseKey(a.BundleIdentifier, a.Name)
-		channel := detectChannel(a.BundleIdentifier, a.Version, a.Name, a.LocalizedDescription)
-
-		ver := AppVersion{
-			Version:     a.Version,
-			Channel:     channel,
-			BundleID:    a.BundleIdentifier,
-			DownloadURL: a.DownloadURL,
-			Size:        a.Size,
-			UpdatedDate: a.VersionDate,
-		}
-
-		if existing, exists := appMap[baseKey]; exists {
-			existing.Versions = append(existing.Versions, ver)
-			if channel == "stable" {
-				existing.Name = a.Name
-				if a.IconURL != "" {
-					existing.IconURL = a.IconURL
-				}
-				if a.LocalizedDescription != "" {
-					existing.Description = a.LocalizedDescription
-				}
+		var entries []rawVer
+		for _, v := range a.Versions {
+			if v.DownloadURL == "" {
+				continue
 			}
-		} else {
-			cleanName := a.Name
-			cleanName = strings.TrimSuffix(cleanName, " (Beta)")
-			cleanName = strings.TrimSuffix(cleanName, " Beta")
-
-			app := &StoreApp{
-				ID:          "alt-" + baseKey,
-				Name:        cleanName,
-				Developer:   a.DeveloperName,
-				Description: a.LocalizedDescription,
-				IconURL:     a.IconURL,
-				Source:      sourceTitle,
-				SourceType:  "altstore",
-				Versions:    []AppVersion{ver},
+			entries = append(entries, rawVer{v.Version, v.Date, v.LocalizedDescription, v.DownloadURL, v.Size})
+		}
+		if len(entries) == 0 && a.DownloadURL != "" {
+			// Legacy single-version format.
+			entries = append(entries, rawVer{a.Version, a.VersionDate, a.LocalizedDescription, a.DownloadURL, a.Size})
+		}
+		for _, e := range entries {
+			// Server-side downloader only speaks https; anything else (http,
+			// custom schemes) can never be imported, so don't list it.
+			if !strings.HasPrefix(strings.ToLower(e.url), "https://") {
+				continue
 			}
-			appMap[baseKey] = app
-			order = append(order, baseKey)
+			baseKey := normalizeBaseKey(a.BundleIdentifier, a.Name)
+			channel := detectChannel(a.BundleIdentifier, e.version, a.Name, e.desc)
+
+			ver := AppVersion{
+				Version:     e.version,
+				Channel:     channel,
+				BundleID:    a.BundleIdentifier,
+				DownloadURL: e.url,
+				Size:        e.size,
+				UpdatedDate: e.date,
+			}
+
+			if existing, exists := appMap[baseKey]; exists {
+				existing.Versions = append(existing.Versions, ver)
+				if channel == "stable" {
+					existing.Name = a.Name
+					if a.IconURL != "" {
+						existing.IconURL = a.IconURL
+					}
+					if a.LocalizedDescription != "" {
+						existing.Description = a.LocalizedDescription
+					}
+				}
+			} else {
+				cleanName := a.Name
+				cleanName = strings.TrimSuffix(cleanName, " (Beta)")
+				cleanName = strings.TrimSuffix(cleanName, " Beta")
+
+				app := &StoreApp{
+					ID:          "alt-" + baseKey,
+					Name:        cleanName,
+					Developer:   a.DeveloperName,
+					Description: a.LocalizedDescription,
+					IconURL:     a.IconURL,
+					Source:      sourceTitle,
+					SourceType:  "altstore",
+					Versions:    []AppVersion{ver},
+				}
+				appMap[baseKey] = app
+				order = append(order, baseKey)
+			}
 		}
 	}
 
@@ -1320,6 +1510,75 @@ func (s *Server) handleStoreSourceJSON(w http.ResponseWriter, r *http.Request) {
 			IconURL:              icon,
 			TintColor:            "388BFD",
 			Size:                 app.Size,
+			Versions:             versions,
+			AppPermissions: map[string]any{
+				"entitlements": []string{},
+				"privacy":      map[string]any{},
+			},
+		})
+	}
+
+	// Sidey's own library: every approved original IPA is published with a
+	// Sidey-hosted download, grouped by bundle with newest first. This is
+	// what makes Sidey-managed apps (including the companion app, once its
+	// IPA is approved) installable from the self-hosted source.
+	type ownEntry struct {
+		id, version, date, filename string
+	}
+	ownByBundle := map[string][]ownEntry{}
+	var ownOrder []string
+	ownRows, ownErr := s.pool.Query(r.Context(), `
+		SELECT id::text, filename, COALESCE(version, ''),
+		       bundle_identifier, imported_at
+		FROM artifacts
+		WHERE quarantine_state = 'approved'
+		  AND bundle_identifier IS NOT NULL AND bundle_identifier <> ''
+		ORDER BY imported_at DESC`)
+	if ownErr == nil {
+		for ownRows.Next() {
+			var eid, fn, ver, bid string
+			var at time.Time
+			if err := ownRows.Scan(&eid, &fn, &ver, &bid, &at); err != nil {
+				continue
+			}
+			if _, ok := ownByBundle[bid]; !ok {
+				ownOrder = append(ownOrder, bid)
+			}
+			ownByBundle[bid] = append(ownByBundle[bid], ownEntry{eid, ver, at.Format(time.RFC3339), fn})
+		}
+		ownRows.Close()
+		if err := ownRows.Err(); err != nil {
+			s.logger.Warn("self-source artifacts lookup failed", "error", err)
+		}
+	} else {
+		s.logger.Warn("self-source artifacts lookup failed", "error", ownErr)
+	}
+	for _, bid := range ownOrder {
+		list := ownByBundle[bid]
+		sort.Slice(list, func(i, j int) bool { return compareVersions(list[i].version, list[j].version) > 0 })
+		name := strings.TrimSuffix(list[0].filename, ".ipa")
+		if name == "" {
+			name = bid
+		}
+		var versions []AltVersion
+		for _, e := range list {
+			versions = append(versions, AltVersion{
+				Version:              e.version,
+				Date:                 e.date,
+				DownloadURL:          baseURL + "/api/v1/store/artifacts/" + e.id + "/install.ipa",
+				LocalizedDescription: fmt.Sprintf("%s %s (Sidey library)", name, e.version),
+			})
+		}
+		altApps = append(altApps, AltApp{
+			Name:                 name,
+			BundleIdentifier:     bid,
+			DeveloperName:        "Sidey",
+			Version:              list[0].version,
+			VersionDate:          list[0].date,
+			VersionDescription:   "Approved IPA from the Sidey library.",
+			DownloadURL:          baseURL + "/api/v1/store/artifacts/" + list[0].id + "/install.ipa",
+			LocalizedDescription: "Approved IPA from the Sidey library.",
+			TintColor:            "388BFD",
 			Versions:             versions,
 			AppPermissions: map[string]any{
 				"entitlements": []string{},

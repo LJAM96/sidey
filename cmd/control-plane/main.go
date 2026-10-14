@@ -65,6 +65,11 @@ func main() {
 
 	server := api.NewServerWithLimits(pool, logger, auditClient, jobService, artifactStore,
 		os.Getenv("SIDEY_ADMIN_API_KEY"), int64(envInt("SIDEY_MAX_ARTIFACT_BYTES", 4<<30)))
+	if cidrs := os.Getenv("SIDEY_ENROLL_CIDRS"); cidrs != "" {
+		if err := server.SetEnrollCIDRs(cidrs); err != nil {
+			logger.Error("invalid SIDEY_ENROLL_CIDRS, keeping defaults", "error", err)
+		}
+	}
 
 	// Refresh scheduler: enqueues refresh jobs for deployments whose profile
 	// is within the lead window of expiry.
@@ -135,6 +140,30 @@ func main() {
 		}
 	}()
 
+	// Accretion discovered-feed mirror: add-only sync of community feeds,
+	// weekly by default (matches upstream discovery cadence). Runs on its
+	// own slow timer, independent of the 12h snapshot loop.
+	discoveredInterval := time.Duration(envInt("DISCOVERED_SYNC_SECONDS", 604800)) * time.Second
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Minute):
+		}
+		for {
+			if added, err := server.SyncDiscoveredSources(ctx); err != nil {
+				logger.Warn("discovered source sync failed", "error", err)
+			} else if added > 0 {
+				logger.Info("discovered sources added", "count", added)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(discoveredInterval):
+			}
+		}
+	}()
+
 	// Signed-derivative retention: original IPAs are kept forever, but a
 	// signed derivative is only useful while its embedded profile is valid.
 	// Rows whose profile expired beyond the retention window are pruned once
@@ -165,6 +194,15 @@ func main() {
 	}()
 
 	port := envOr("PORT", "8080")
+	// Companion discovery (Phase 6): mDNS advertisement of the stable
+	// server identity on LAN interfaces. Best-effort and tied to the
+	// process context; disable with SIDEY_MDNS_ENABLE=0.
+	if mdnsPort, err := strconv.Atoi(port); err == nil {
+		mdnsEnable := envOr("SIDEY_MDNS_ENABLE", "1") != "0"
+		go server.RunDiscovery(ctx, mdnsPort, mdnsEnable)
+	} else {
+		logger.Warn("mdns advertisement skipped: invalid PORT", "port", port)
+	}
 	// Timeouts are part of the hardening contract: ReadTimeout caps slow
 	// request bodies, WriteTimeout prevents a stuck upstream from holding a
 	// connection open indefinitely, and IdleTimeout recycles idle keep-alive

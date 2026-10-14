@@ -104,9 +104,15 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 	s.queryTable(w, r, `
-		SELECT id, device_id, channel_id, target, desired_version,
-		       update_policy, current_state, rollback_artifact_id, updated_at
-		FROM deployments ORDER BY updated_at DESC LIMIT 200`)
+		SELECT dep.id, dep.device_id, dep.channel_id, dep.target, dep.desired_version,
+		       dep.update_policy, dep.current_state, dep.rollback_artifact_id, dep.updated_at,
+		       COALESCE(art.bundle_identifier, '') AS current_bundle,
+		       COALESCE(art.version, '') AS current_version
+		FROM deployments dep
+		LEFT JOIN installation_records ir ON ir.deployment_id = dep.id
+		LEFT JOIN signed_artifacts sa ON sa.id = ir.signed_artifact_id
+		LEFT JOIN artifacts art ON art.id = sa.source_artifact_id
+		ORDER BY dep.updated_at DESC LIMIT 200`)
 }
 
 // handleListRefresh exposes the refresh calendar: each deployment's current
